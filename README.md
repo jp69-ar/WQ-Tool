@@ -10,4 +10,4 @@ This uses a default PCV and limit database - although your own database can be a
 
 To see more information on the details of the complaince limit, hover over it.
 
-Contact jonathan.powell@atkinsrealis.com for ore info.
+Contact jonathan.powell@atkinsrealis.com for more info.
