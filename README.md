@@ -9,5 +9,3 @@ Multiple water sources can be presented either within one worksheet, or split be
 This uses a default PCV and limit database - although your own database can be altered. Ensure that the same column formatting is used within PCVs.xlsb, which is contained within the source folder for this applet.
 
 To see more information on the details of the complaince limit, hover over it.
-
-Contact jonathan.powell@atkinsrealis.com for more info.
