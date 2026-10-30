@@ -3277,425 +3277,425 @@ if uploaded_files:
             file_name=excel_filename
             
 
-# =================================================
-# PFAS / PESTICIDE TOTALS
-# =================================================
+    # =================================================
+    # PFAS / PESTICIDE TOTALS
+    # =================================================
 
-with tab8:
+    with tab8:
 
-    st.subheader("PFAS & Pesticide Totals")
+        st.subheader("PFAS & Pesticide Totals")
 
-    site_df = df[
-        (df[SITE_COL] == selected_site)
-        &
-        (df[DATE_COL] >= pd.to_datetime(start_date))
-        &
-        (df[DATE_COL] <= pd.to_datetime(end_date))
-    ].copy()
+        site_df = df[
+            (df[SITE_COL] == selected_site)
+            &
+            (df[DATE_COL] >= pd.to_datetime(start_date))
+            &
+            (df[DATE_COL] <= pd.to_datetime(end_date))
+        ].copy()
 
-    site_df["Component_Clean"] = (
-        site_df[DET_COL]
-        .apply(clean_component_name)
-    )
-
-    # -----------------------------------------
-    # PFAS / PESTICIDE MATCHING
-    # -----------------------------------------
-
-    pfas_results = site_df[
-        site_df["Component_Clean"]
-        .isin(PFAS_COMPONENTS)
-    ].copy()
-
-    pesticide_results = site_df[
-        site_df["Component_Clean"]
-        .isin(PESTICIDE_COMPONENTS)
-    ].copy()
-
-    matched_pfas = sorted(
-        pfas_results[DET_COL]
-        .dropna()
-        .unique()
-    )
-
-    matched_pesticides = sorted(
-        pesticide_results[DET_COL]
-        .dropna()
-        .unique()
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        with st.expander(
-            f"Matched PFAS Components ({len(matched_pfas)})",
-            expanded=False
-        ):
-
-            st.dataframe(
-                pd.DataFrame({
-                    "PFAS Components": matched_pfas
-                }),
-                use_container_width=True,
-                hide_index=True
-            )
-
-    with col2:
-
-        with st.expander(
-            f"Matched Pesticides ({len(matched_pesticides)})",
-            expanded=False
-        ):
-
-            st.dataframe(
-                pd.DataFrame({
-                    "Pesticide Components": matched_pesticides
-                }),
-                use_container_width=True,
-                hide_index=True
-            )
-
-    # -----------------------------------------
-    # TOTALS
-    # -----------------------------------------
-
-    pfas_totals = (
-        pfas_results
-        .groupby(DATE_COL)[RESULT_COL]
-        .sum()
-        .reset_index()
-        .rename(
-            columns={
-                RESULT_COL: "PFAS Total"
-            }
+        site_df["Component_Clean"] = (
+            site_df[DET_COL]
+            .apply(clean_component_name)
         )
-    )
 
-    pesticide_totals = (
-        pesticide_results
-        .groupby(DATE_COL)[RESULT_COL]
-        .sum()
-        .reset_index()
-        .rename(
-            columns={
-                RESULT_COL: "Pesticides Total"
-            }
-        )
-    )
+        # -----------------------------------------
+        # PFAS / PESTICIDE MATCHING
+        # -----------------------------------------
 
-    totals_df = pd.merge(
-        pfas_totals,
-        pesticide_totals,
-        on=DATE_COL,
-        how="outer"
-    ).sort_values(DATE_COL)
+        pfas_results = site_df[
+            site_df["Component_Clean"]
+            .isin(PFAS_COMPONENTS)
+        ].copy()
 
-    total_units = ""
+        pesticide_results = site_df[
+            site_df["Component_Clean"]
+            .isin(PESTICIDE_COMPONENTS)
+        ].copy()
 
-    if (
-        UNIT_COL
-        and UNIT_COL in site_df.columns
-    ):
-
-        unit_values = (
-            site_df[UNIT_COL]
+        matched_pfas = sorted(
+            pfas_results[DET_COL]
             .dropna()
-            .astype(str)
+            .unique()
         )
 
-        if not unit_values.empty:
-            total_units = unit_values.mode().iloc[0]
+        matched_pesticides = sorted(
+            pesticide_results[DET_COL]
+            .dropna()
+            .unique()
+        )
 
-    # -----------------------------------------
-    # FIGURE
-    # -----------------------------------------
+        col1, col2 = st.columns(2)
 
-    fig_totals = go.Figure()
+        with col1:
 
-    if not pfas_totals.empty:
+            with st.expander(
+                f"Matched PFAS Components ({len(matched_pfas)})",
+                expanded=False
+            ):
 
-        fig_totals.add_trace(
-            go.Scatter(
-                x=pfas_totals[DATE_COL],
-                y=pfas_totals["PFAS Total"],
-                mode="lines+markers",
-                name="PFAS Total",
-                line=dict(
-                    color="purple",
-                    width=3
+                st.dataframe(
+                    pd.DataFrame({
+                        "PFAS Components": matched_pfas
+                    }),
+                    use_container_width=True,
+                    hide_index=True
                 )
+
+        with col2:
+
+            with st.expander(
+                f"Matched Pesticides ({len(matched_pesticides)})",
+                expanded=False
+            ):
+
+                st.dataframe(
+                    pd.DataFrame({
+                        "Pesticide Components": matched_pesticides
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+        # -----------------------------------------
+        # TOTALS
+        # -----------------------------------------
+
+        pfas_totals = (
+            pfas_results
+            .groupby(DATE_COL)[RESULT_COL]
+            .sum()
+            .reset_index()
+            .rename(
+                columns={
+                    RESULT_COL: "PFAS Total"
+                }
             )
         )
 
-        pfas_mean = pfas_totals["PFAS Total"].mean()
-
-        fig_totals.add_trace(
-            go.Scatter(
-                x=[
-                    pfas_totals[DATE_COL].min(),
-                    pfas_totals[DATE_COL].max()
-                ],
-                y=[
-                    pfas_mean,
-                    pfas_mean
-                ],
-                mode="lines",
-                name=(
-                    f"PFAS Mean "
-                    f"({pfas_mean:.3f} {total_units})"
-                ),
-                line=dict(
-                    color="purple",
-                    width=2,
-                    dash="dot"
-                )
+        pesticide_totals = (
+            pesticide_results
+            .groupby(DATE_COL)[RESULT_COL]
+            .sum()
+            .reset_index()
+            .rename(
+                columns={
+                    RESULT_COL: "Pesticides Total"
+                }
             )
         )
 
-    if not pesticide_totals.empty:
+        totals_df = pd.merge(
+            pfas_totals,
+            pesticide_totals,
+            on=DATE_COL,
+            how="outer"
+        ).sort_values(DATE_COL)
 
-        fig_totals.add_trace(
-            go.Scatter(
-                x=pesticide_totals[DATE_COL],
-                y=pesticide_totals["Pesticides Total"],
-                mode="lines+markers",
-                name="Pesticides Total",
-                line=dict(
-                    color="green",
-                    width=3
-                )
+        total_units = ""
+
+        if (
+            UNIT_COL
+            and UNIT_COL in site_df.columns
+        ):
+
+            unit_values = (
+                site_df[UNIT_COL]
+                .dropna()
+                .astype(str)
             )
-        )
 
-        pesticide_mean = (
-            pesticide_totals[
-                "Pesticides Total"
-            ].mean()
-        )
+            if not unit_values.empty:
+                total_units = unit_values.mode().iloc[0]
 
-        fig_totals.add_trace(
-            go.Scatter(
-                x=[
-                    pesticide_totals[DATE_COL].min(),
-                    pesticide_totals[DATE_COL].max()
-                ],
-                y=[
-                    pesticide_mean,
-                    pesticide_mean
-                ],
-                mode="lines",
-                name=(
-                    f"Pesticides Mean "
-                    f"({pesticide_mean:.3f} {total_units})"
-                ),
-                line=dict(
-                    color="darkgreen",
-                    width=2,
-                    dash="dot"
-                )
-            )
-        )
+        # -----------------------------------------
+        # FIGURE
+        # -----------------------------------------
 
-    if pd.notna(PFAS_LIMIT):
-
-        fig_totals.add_trace(
-            go.Scatter(
-                x=[
-                    totals_df[DATE_COL].min(),
-                    totals_df[DATE_COL].max()
-                ],
-                y=[
-                    PFAS_LIMIT,
-                    PFAS_LIMIT
-                ],
-                mode="lines",
-                name=(
-                    f"PFAS Limit "
-                    f"({PFAS_LIMIT:.3f} {total_units})"
-                ),
-                line=dict(
-                    color="purple",
-                    width=3,
-                    dash="dash"
-                )
-            )
-        )
-
-    if pd.notna(PESTICIDE_LIMIT):
-
-        fig_totals.add_trace(
-            go.Scatter(
-                x=[
-                    totals_df[DATE_COL].min(),
-                    totals_df[DATE_COL].max()
-                ],
-                y=[
-                    PESTICIDE_LIMIT,
-                    PESTICIDE_LIMIT
-                ],
-                mode="lines",
-                name=(
-                    f"Pesticide Limit "
-                    f"({PESTICIDE_LIMIT:.3f} {total_units})"
-                ),
-                line=dict(
-                    color="darkgreen",
-                    width=3,
-                    dash="dash"
-                )
-            )
-        )
-
-    fig_totals.update_layout(
-        template="simple_white",
-        height=700,
-        title=(
-            f"{selected_site}"
-            "<br>PFAS & Pesticide Totals"
-        ),
-        xaxis_title="Sample Date",
-        yaxis_title=f"Total Concentration ({total_units})",
-        legend_title="Series"
-    )
-
-    st.plotly_chart(
-        fig_totals,
-        use_container_width=True
-    )
-
-    # -----------------------------------------
-    # SUMMARY TABLES
-    # -----------------------------------------
-
-    event_summary = pd.DataFrame({
-        "Statistic": [
-            "Monitoring Start",
-            "Monitoring End",
-            "PFAS Components Included",
-            "Pesticide Components Included",
-            "PFAS Samples",
-            "Pesticide Samples"
-        ],
-        "Value": [
-            totals_df[DATE_COL].min().strftime("%d %b %Y"),
-            totals_df[DATE_COL].max().strftime("%d %b %Y"),
-            len(matched_pfas),
-            len(matched_pesticides),
-            len(pfas_totals),
-            len(pesticide_totals)
-        ]
-    })
-
-    st.dataframe(
-        event_summary,
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.subheader("PFAS Summary")
+        fig_totals = go.Figure()
 
         if not pfas_totals.empty:
 
-            pfas_summary = pd.DataFrame({
-
-                "Statistic": [
-                    "Matched Components",
-                    "Samples",
-                    "Mean",
-                    "P50",
-                    "P95",
-                    "Maximum",
-                    "Limit",
-                    "Breaches"
-                ],
-
-                "Value": [
-                    len(matched_pfas),
-                    len(pfas_totals),
-                    f"{pfas_totals['PFAS Total'].mean():.3f} {total_units}",
-                    f"{pfas_totals['PFAS Total'].quantile(0.50):.3f} {total_units}",
-                    f"{pfas_totals['PFAS Total'].quantile(0.95):.3f} {total_units}",
-                    f"{pfas_totals['PFAS Total'].max():.3f} {total_units}",
-                    f"{PFAS_LIMIT:.3f} {total_units}",
-                    (
-                        pfas_totals["PFAS Total"]
-                        > PFAS_LIMIT
-                    ).sum()
-                ]
-            })
-
-            st.dataframe(
-                pfas_summary,
-                use_container_width=True,
-                hide_index=True
+            fig_totals.add_trace(
+                go.Scatter(
+                    x=pfas_totals[DATE_COL],
+                    y=pfas_totals["PFAS Total"],
+                    mode="lines+markers",
+                    name="PFAS Total",
+                    line=dict(
+                        color="purple",
+                        width=3
+                    )
+                )
             )
 
-    with col2:
+            pfas_mean = pfas_totals["PFAS Total"].mean()
 
-        st.subheader("Pesticides Summary")
+            fig_totals.add_trace(
+                go.Scatter(
+                    x=[
+                        pfas_totals[DATE_COL].min(),
+                        pfas_totals[DATE_COL].max()
+                    ],
+                    y=[
+                        pfas_mean,
+                        pfas_mean
+                    ],
+                    mode="lines",
+                    name=(
+                        f"PFAS Mean "
+                        f"({pfas_mean:.3f} {total_units})"
+                    ),
+                    line=dict(
+                        color="purple",
+                        width=2,
+                        dash="dot"
+                    )
+                )
+            )
 
         if not pesticide_totals.empty:
 
-            pesticide_summary = pd.DataFrame({
-
-                "Statistic": [
-                    "Matched Components",
-                    "Samples",
-                    "Mean",
-                    "P50",
-                    "P95",
-                    "Maximum",
-                    "Limit",
-                    "Breaches"
-                ],
-
-                "Value": [
-                    len(matched_pesticides),
-                    len(pesticide_totals),
-                    f"{pesticide_totals['Pesticides Total'].mean():.3f} {total_units}",
-                    f"{pesticide_totals['Pesticides Total'].quantile(0.50):.3f} {total_units}",
-                    f"{pesticide_totals['Pesticides Total'].quantile(0.95):.3f} {total_units}",
-                    f"{pesticide_totals['Pesticides Total'].max():.3f} {total_units}",
-                    f"{PESTICIDE_LIMIT:.3f} {total_units}",
-                    (
-                        pesticide_totals["Pesticides Total"]
-                        > PESTICIDE_LIMIT
-                    ).sum()
-                ]
-            })
-
-            st.dataframe(
-                pesticide_summary,
-                use_container_width=True,
-                hide_index=True
+            fig_totals.add_trace(
+                go.Scatter(
+                    x=pesticide_totals[DATE_COL],
+                    y=pesticide_totals["Pesticides Total"],
+                    mode="lines+markers",
+                    name="Pesticides Total",
+                    line=dict(
+                        color="green",
+                        width=3
+                    )
+                )
             )
-    
-    totals_display = totals_df.copy()
 
-    if "PFAS Total" in totals_display.columns:
-        totals_display["PFAS Total"] = (
-            totals_display["PFAS Total"]
-            .round(3)
-            .astype(str)
-            + f" {total_units}"
+            pesticide_mean = (
+                pesticide_totals[
+                    "Pesticides Total"
+                ].mean()
+            )
+
+            fig_totals.add_trace(
+                go.Scatter(
+                    x=[
+                        pesticide_totals[DATE_COL].min(),
+                        pesticide_totals[DATE_COL].max()
+                    ],
+                    y=[
+                        pesticide_mean,
+                        pesticide_mean
+                    ],
+                    mode="lines",
+                    name=(
+                        f"Pesticides Mean "
+                        f"({pesticide_mean:.3f} {total_units})"
+                    ),
+                    line=dict(
+                        color="darkgreen",
+                        width=2,
+                        dash="dot"
+                    )
+                )
+            )
+
+        if pd.notna(PFAS_LIMIT):
+
+            fig_totals.add_trace(
+                go.Scatter(
+                    x=[
+                        totals_df[DATE_COL].min(),
+                        totals_df[DATE_COL].max()
+                    ],
+                    y=[
+                        PFAS_LIMIT,
+                        PFAS_LIMIT
+                    ],
+                    mode="lines",
+                    name=(
+                        f"PFAS Limit "
+                        f"({PFAS_LIMIT:.3f} {total_units})"
+                    ),
+                    line=dict(
+                        color="purple",
+                        width=3,
+                        dash="dash"
+                    )
+                )
+            )
+
+        if pd.notna(PESTICIDE_LIMIT):
+
+            fig_totals.add_trace(
+                go.Scatter(
+                    x=[
+                        totals_df[DATE_COL].min(),
+                        totals_df[DATE_COL].max()
+                    ],
+                    y=[
+                        PESTICIDE_LIMIT,
+                        PESTICIDE_LIMIT
+                    ],
+                    mode="lines",
+                    name=(
+                        f"Pesticide Limit "
+                        f"({PESTICIDE_LIMIT:.3f} {total_units})"
+                    ),
+                    line=dict(
+                        color="darkgreen",
+                        width=3,
+                        dash="dash"
+                    )
+                )
+            )
+
+        fig_totals.update_layout(
+            template="simple_white",
+            height=700,
+            title=(
+                f"{selected_site}"
+                "<br>PFAS & Pesticide Totals"
+            ),
+            xaxis_title="Sample Date",
+            yaxis_title=f"Total Concentration ({total_units})",
+            legend_title="Series"
         )
 
-    if "Pesticides Total" in totals_display.columns:
-        totals_display["Pesticides Total"] = (
-            totals_display["Pesticides Total"]
-            .round(3)
-            .astype(str)
-            + f" {total_units}"
+        st.plotly_chart(
+            fig_totals,
+            use_container_width=True
         )
 
-    st.dataframe(
-        totals_display,
-        use_container_width=True,
-        hide_index=True
-    )
+        # -----------------------------------------
+        # SUMMARY TABLES
+        # -----------------------------------------
+
+        event_summary = pd.DataFrame({
+            "Statistic": [
+                "Monitoring Start",
+                "Monitoring End",
+                "PFAS Components Included",
+                "Pesticide Components Included",
+                "PFAS Samples",
+                "Pesticide Samples"
+            ],
+            "Value": [
+                totals_df[DATE_COL].min().strftime("%d %b %Y"),
+                totals_df[DATE_COL].max().strftime("%d %b %Y"),
+                len(matched_pfas),
+                len(matched_pesticides),
+                len(pfas_totals),
+                len(pesticide_totals)
+            ]
+        })
+
+        st.dataframe(
+            event_summary,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.subheader("PFAS Summary")
+
+            if not pfas_totals.empty:
+
+                pfas_summary = pd.DataFrame({
+
+                    "Statistic": [
+                        "Matched Components",
+                        "Samples",
+                        "Mean",
+                        "P50",
+                        "P95",
+                        "Maximum",
+                        "Limit",
+                        "Breaches"
+                    ],
+
+                    "Value": [
+                        len(matched_pfas),
+                        len(pfas_totals),
+                        f"{pfas_totals['PFAS Total'].mean():.3f} {total_units}",
+                        f"{pfas_totals['PFAS Total'].quantile(0.50):.3f} {total_units}",
+                        f"{pfas_totals['PFAS Total'].quantile(0.95):.3f} {total_units}",
+                        f"{pfas_totals['PFAS Total'].max():.3f} {total_units}",
+                        f"{PFAS_LIMIT:.3f} {total_units}",
+                        (
+                            pfas_totals["PFAS Total"]
+                            > PFAS_LIMIT
+                        ).sum()
+                    ]
+                })
+
+                st.dataframe(
+                    pfas_summary,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+        with col2:
+
+            st.subheader("Pesticides Summary")
+
+            if not pesticide_totals.empty:
+
+                pesticide_summary = pd.DataFrame({
+
+                    "Statistic": [
+                        "Matched Components",
+                        "Samples",
+                        "Mean",
+                        "P50",
+                        "P95",
+                        "Maximum",
+                        "Limit",
+                        "Breaches"
+                    ],
+
+                    "Value": [
+                        len(matched_pesticides),
+                        len(pesticide_totals),
+                        f"{pesticide_totals['Pesticides Total'].mean():.3f} {total_units}",
+                        f"{pesticide_totals['Pesticides Total'].quantile(0.50):.3f} {total_units}",
+                        f"{pesticide_totals['Pesticides Total'].quantile(0.95):.3f} {total_units}",
+                        f"{pesticide_totals['Pesticides Total'].max():.3f} {total_units}",
+                        f"{PESTICIDE_LIMIT:.3f} {total_units}",
+                        (
+                            pesticide_totals["Pesticides Total"]
+                            > PESTICIDE_LIMIT
+                        ).sum()
+                    ]
+                })
+
+                st.dataframe(
+                    pesticide_summary,
+                    use_container_width=True,
+                    hide_index=True
+                )
+        
+        totals_display = totals_df.copy()
+
+        if "PFAS Total" in totals_display.columns:
+            totals_display["PFAS Total"] = (
+                totals_display["PFAS Total"]
+                .round(3)
+                .astype(str)
+                + f" {total_units}"
+            )
+
+        if "Pesticides Total" in totals_display.columns:
+            totals_display["Pesticides Total"] = (
+                totals_display["Pesticides Total"]
+                .round(3)
+                .astype(str)
+                + f" {total_units}"
+            )
+
+        st.dataframe(
+            totals_display,
+            use_container_width=True,
+            hide_index=True
+        )
