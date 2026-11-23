@@ -23,8 +23,9 @@ from datetime import timedelta
 # =====================================================
 
 st.set_page_config(
-    page_title="Water Quality Reporting Tool",
-    layout="wide"
+    page_title="WQ Tool",
+    layout="wide",
+    page_icon=":droplet:"
 )
 
 st.markdown("""
@@ -32,26 +33,37 @@ st.markdown("""
 :root {
     color-scheme: light;
 }
+
+/*
+Do not change the sidebar's position or height.
+Streamlit already keeps the sidebar visible and provides
+independent scrolling when the content exceeds the viewport.
+*/
+section[data-testid="stSidebar"] div[data-testid="stSidebarContent"] {
+    padding-bottom: 4rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Water Quality Reporting Tool.")
+st.title("Water Quality Reporting Tool")
 
-st.markdown(
-    """
+with st.expander("User Guide"):
+    st.markdown("""
     It is recommended to run this app in light mode (can change with 3 dots in the top right corner), and to zoom out slightly in your browser.
     
     - Upload WQ data to generate report ready interactive figures and a data summary sheet.
     
     - Sites will likely require manual column mapping. Ensure the correct sheet/tab is corrected, and use the WQ data to map the correct columns within this app.
     
-    - Note that when the units are contained within the parameter column (e.g. Turbidity (NTU)), the Auto Unit function can be used by selecting it within the Unit Column within column mapping, which separates the units for data analysis and presentation
+    - Note that when the units are contained within the parameter column (e.g. Turbidity (NTU)), the "Auto_Unit" function can be used by selecting it within the Unit Column within column mapping, which separates the units for data analysis and presentation.
     
     - Multiple water sources can be presented either within one worksheet, or split between multiple worksheets with one water source each - check which is applicable to your data.
     
-    - This uses a default PCV and limit database - although your own database can be altered. Ensure that the same column formatting is used within PCVs.xlsb, which is contained within the source folder for this applet.
+    - This uses a default PCV and limit database which contains UK, EU, and WHO limit values, as well as water company internal standards.
     
     - To see more information on the details of the compliance limit, hover over it.
+    
+    :red-background[**Note - if an error appears after loading your dataset, it is likely that column mapping is configured incorrectly, or that there is insufficient data for that part of the app to work. Ensure all columns are selected correctly.**]
     
     """
 )
@@ -60,7 +72,13 @@ st.markdown(
 # FUNCTIONS
 # =====================================================
 
-def statistics_table(data, result_col, selected_component):
+
+def statistics_table(
+    data,
+    result_col,
+    selected_component,
+    sample_unit=""
+):
 
     limit_value = None
     breach_count = 0
@@ -79,12 +97,13 @@ def statistics_table(data, result_col, selected_component):
 
     stats = {
         "Component": [selected_component],
-        "Samples": [len(data)],
-        "Breaches": [breach_count],
+        "No. Samples": [len(data)],
+        "No. Breaches": [breach_count],
         "% Exceeding": [
             100 * breach_count / len(data)
             if len(data) > 0 else 0
         ],
+        "Units": [sample_unit],
         "Minimum": [data[result_col].min()],
         "P10": [data[result_col].quantile(0.10)],
         "Mean": [data[result_col].mean()],
@@ -108,7 +127,8 @@ def build_export(
     start_date,
     end_date,
     source_filename,
-    component_limits
+    component_limits,
+    sample_unit
 ):
 
     output = BytesIO()
@@ -118,6 +138,7 @@ def build_export(
             "Source File",
             "Water Source",
             "Component",
+            "Unit",
             "Monitoring Start",
             "Monitoring End",
             "Sample Count",
@@ -129,6 +150,7 @@ def build_export(
             source_filename,
             selected_site,
             selected_component,
+            sample_unit,
             pd.to_datetime(start_date).strftime("%d %b %Y"),
             pd.to_datetime(end_date).strftime("%d %b %Y"),
             len(filtered_df),
@@ -145,11 +167,28 @@ def build_export(
 
     if not component_limits.empty:
 
+        sample_unit = ""
+
+        if (
+            UNIT_COL is not None
+            and UNIT_COL in filtered_df.columns
+        ):
+            unit_values = (
+                filtered_df[UNIT_COL]
+                .dropna()
+                .astype(str)
+            )
+
+            if not unit_values.empty:
+                sample_unit = (
+                    unit_values.mode().iloc[0]
+                )
+                
         for _, limit_row in component_limits.iterrows():
 
-            limit_value = pd.to_numeric(
-                limit_row["Limit Value"],
-                errors="coerce"
+            limit_value = get_converted_limit(
+                limit_row,
+                sample_unit
             )
 
             if pd.notna(limit_value):
@@ -164,7 +203,7 @@ def build_export(
                     "Limit":
                         limit_value,
                     "Unit":
-                        limit_row["Units"],
+                        sample_unit,
                     "Maximum Result":
                         filtered_df[RESULT_COL].max(),
                     "Breaches":
@@ -233,6 +272,7 @@ def build_pdf_report(
     start_date,
     end_date,
     source_filename,
+    sample_unit,
     figure_path=None
 ):
 
@@ -297,6 +337,7 @@ def build_pdf_report(
         ["Source File", source_filename],
         ["Water Source", selected_site],
         ["Component", selected_component],
+        ["Unit", sample_unit],
         [
             "Monitoring Period",
             f"{pd.to_datetime(start_date).strftime('%d %b %Y')} "
@@ -337,7 +378,7 @@ def build_pdf_report(
         summary_text = f"""
         <b>Executive Summary</b><br/><br/>
         No. samples analysed: {samples}<br/>
-        Maximum recorded value: {maximum}<br/><br/>
+        Maximum recorded value: {value_with_unit(maximum, sample_unit)}<br/><br/>
         <u>Recorded Exceedances</u>
         """
 
@@ -347,9 +388,9 @@ def build_pdf_report(
 
         for _, limit_row in component_limits.iterrows():
 
-            limit_value = pd.to_numeric(
-                limit_row["Limit Value"],
-                errors="coerce"
+            limit_value = get_converted_limit(
+                limit_row,
+                sample_unit
             )
 
             if pd.notna(limit_value):
@@ -360,7 +401,7 @@ def build_pdf_report(
 
                 regulation = limit_row["Regulatory Source"]
                 poc = limit_row.get("Point of Compliance", "")
-                units = limit_row.get("Units", "")
+                units = sample_unit
 
                 content.append(
                     Paragraph(
@@ -450,30 +491,42 @@ def build_pdf_report(
 
     content.append(Spacer(1, 10))
 
-    compliance_table = Table(
-        [summary_df.columns.tolist()]
-        + summary_df.values.tolist(),
-        repeatRows=1
-    )
+    if not summary_df.empty:
 
-    compliance_table.setStyle(
-        TableStyle([
-            ("BACKGROUND", (0,0), (-1,0),
-             colors.HexColor("#0F4C81")),
-            ("TEXTCOLOR", (0,0), (-1,0),
-             colors.white),
-            ("FONTNAME", (0,0), (-1,0),
-             "Helvetica-Bold"),
-            ("GRID", (0,0), (-1,-1),
-             0.5, colors.black),
-            ("FONTSIZE", (0,0), (-1,-1), 6),
-            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1),
-             [colors.whitesmoke, colors.lightgrey])
-        ])
-    )
+        compliance_table = Table(
+            [summary_df.columns.tolist()]
+            + summary_df.values.tolist(),
+            repeatRows=1
+        )
 
-    content.append(compliance_table)
+        compliance_table.setStyle(
+            TableStyle([
+                ("BACKGROUND", (0,0), (-1,0),
+                 colors.HexColor("#0F4C81")),
+                ("TEXTCOLOR", (0,0), (-1,0),
+                 colors.white),
+                ("FONTNAME", (0,0), (-1,0),
+                 "Helvetica-Bold"),
+                ("GRID", (0,0), (-1,-1),
+                 0.5, colors.black),
+                ("FONTSIZE", (0,0), (-1,-1), 6),
+                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                ("ROWBACKGROUNDS", (0,1), (-1,-1),
+                 [colors.whitesmoke, colors.lightgrey])
+            ])
+        )
+
+        content.append(compliance_table)
+
+    else:
+
+        content.append(
+            Paragraph(
+                "No compliance summary generated.",
+                styles["BodyText"]
+            )
+        )
+
 
     # =====================================================
     # HEADER / FOOTER
@@ -589,7 +642,11 @@ def create_export_figure(
             x=[filtered[DATE_COL].min(), filtered[DATE_COL].max()],
             y=[mean, mean],
             mode="lines",
-            name=f"Mean ({mean:.2f})",
+            name=(
+                    f"Mean ({mean:.2f} {units})"
+                    if units
+                    else f"Mean ({mean:.2f})"
+                ),
             line=dict(
                 color="#000000",
                 width=3,
@@ -604,7 +661,11 @@ def create_export_figure(
             x=[filtered[DATE_COL].min(), filtered[DATE_COL].max()],
             y=[p50, p50],
             mode="lines",
-            name=f"P50 ({p50:.2f})",
+            name=(
+                    f"P50 ({p50:.2f} {units})"
+                    if units
+                    else f"P50 ({p50:.2f})"
+                ),
             line=dict(
                 color="#4B0082",
                 width=3,
@@ -619,7 +680,11 @@ def create_export_figure(
             x=[filtered[DATE_COL].min(), filtered[DATE_COL].max()],
             y=[p95, p95],
             mode="lines",
-            name=f"P95 ({p95:.2f})",
+            name=(
+                    f"P95 ({p95:.2f} {units})"
+                    if units
+                    else f"P95 ({p95:.2f})"
+                ),
             line=dict(
                 color="#FF00FF",
                 width=3,
@@ -697,23 +762,598 @@ def create_export_figure(
 
     return fig
     
-# =====================================================
-# FILE UPLOAD
-# =====================================================
+def prepare_figure_for_png(
+    source_fig,
+    width=2400,
+    height=1350
+):
+    """
+    Return a separate Plotly figure configured so all titles,
+    axes and legend entries remain inside the PNG canvas.
+    """
+    export_figure = go.Figure(source_fig)
 
-uploaded_files = st.file_uploader(
-    "Upload Water Quality Dataset(s)",
-    type=["xlsx", "csv"],
-    accept_multiple_files=True
-)
+    # Use a horizontal legend inside the image.
+    # Long legends wrap onto additional rows rather than
+    # extending beyond the right edge.
+    legend_entries = sum(
+        1
+        for trace in export_figure.data
+        if trace.showlegend is not False
+        and getattr(trace, "name", None)
+    )
 
-pcv_file = st.file_uploader(
-    "Upload Regulatory Limits Database (optional)",
-    type=["xlsx", "xlsb", "csv"]
-)
+    # Increase top margin when there are many legend entries.
+    legend_rows = max(
+        1,
+        int(np.ceil(legend_entries / 4))
+    )
+
+    top_margin = min(
+        500,
+        150 + (legend_rows * 55)
+    )
+
+    export_figure.update_layout(
+        autosize=False,
+        width=width,
+        height=height,
+        template="simple_white",
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+
+        # Keep the title inside the canvas.
+        title=dict(
+            x=0.01,
+            xanchor="left",
+            y=0.98,
+            yanchor="top",
+            font=dict(size=30)
+        ),
+
+        # Keep the legend within the PNG boundaries.
+        legend=dict(
+            orientation="h",
+            x=0,
+            xanchor="left",
+            y=1.02,
+            yanchor="bottom",
+            font=dict(size=16),
+            title=dict(
+                font=dict(size=16)
+            ),
+            entrywidth=0.24,
+            entrywidthmode="fraction"
+        ),
+
+        margin=dict(
+            l=140,
+            r=80,
+            t=top_margin,
+            b=130,
+            pad=10,
+            autoexpand=True
+        ),
+
+        font=dict(
+            family="Arial",
+            size=18,
+            color="black"
+        )
+    )
+
+    # Allow Plotly to make extra space for long axis titles
+    # and tick-label text.
+    export_figure.update_xaxes(
+        automargin=True,
+        title_standoff=25
+    )
+
+    export_figure.update_yaxes(
+        automargin=True,
+        title_standoff=25
+    )
+
+    return export_figure    
+    
+@st.cache_data
+def load_default_pcv():
+    return pd.read_excel(
+        "PCVs.xlsb",
+        engine="pyxlsb"
+    )
+
+
+@st.cache_data
+def load_default_pfas():
+    return pd.read_excel(
+        "PCVs.xlsb",
+        sheet_name="PFAS",
+        engine="pyxlsb"
+    )
+
+
+@st.cache_data
+def load_default_pesticides():
+    return pd.read_excel(
+        "PCVs.xlsb",
+        sheet_name="Pesticides",
+        engine="pyxlsb"
+    )
+    
+@st.cache_data
+def load_excel_file(file_bytes):
+
+    loaded = {}
+
+    excel_file = pd.ExcelFile(
+        BytesIO(file_bytes)
+    )
+
+    for sheet in excel_file.sheet_names:
+
+        loaded[sheet] = pd.read_excel(
+            excel_file,
+            sheet_name=sheet
+        )
+
+    return loaded
+
+
+@st.cache_data
+def load_csv_file(file_bytes):
+
+    return pd.read_csv(
+        BytesIO(file_bytes)
+    )
+    
+import re
+    
+def clean_component_name(text):
+    text = str(text).strip().lower()
+
+    # Standardise micro symbols
+    text = (
+        text
+        .replace("µ", "u")
+        .replace("μ", "u")
+    )
+
+    # Remove any bracketed information:
+    # Copper (mg/l) -> Copper
+    text = re.sub(
+        r"\([^)]*\)",
+        "",
+        text
+    )
+
+    # Remove concentration units at the end:
+    # Copper mg/l -> Copper
+    # Copper mg l -> Copper
+    # Copper ug/L -> Copper
+    # Copper micrograms/l -> Copper
+    text = re.sub(
+        r"""
+        \s+
+        (?:
+            mg |
+            ug |
+            ng |
+            g |
+            micrograms? |
+            milligrams? |
+            nanograms?
+        )
+        \s*
+        (?:/|\s+)
+        \s*
+        (?:
+            l |
+            litre |
+            litres |
+            liter |
+            liters
+        )
+        \s*$
+        """,
+        "",
+        text,
+        flags=re.IGNORECASE | re.VERBOSE
+    )
+
+    # Existing general normalisation
+    text = text.replace("/", " ")
+    text = text.replace("-", " ")
+    text = " ".join(text.split())
+
+    return text.strip() 
+
+@st.cache_data
+def build_limit_lookup(pcv_df):
+
+    lookup = {}
+
+    for _, row in pcv_df.iterrows():
+
+        parameter = clean_component_name(
+            row.get("Parameter", "")
+        )
+
+        row_dict = row.to_dict()
+
+        lookup.setdefault(
+            parameter,
+            []
+        ).append(row_dict)
+
+        aliases = str(
+            row.get(
+                "Parameter Alias(es)",
+                ""
+            )
+        )
+
+        for alias in aliases.split(","):
+
+            alias = clean_component_name(alias)
+
+            if alias:
+
+                lookup.setdefault(
+                    alias,
+                    []
+                ).append(row_dict)
+
+    return lookup            
+    
+@st.cache_data
+def add_component_clean(df, det_col):
+
+    df = df.copy()
+
+    df["Component_Clean"] = (
+        df[det_col]
+        .astype(str)
+        .apply(clean_component_name)
+    )
+
+    return df    
+
+@st.cache_data
+def clean_dataset(
+    df,
+    date_col,
+    det_col,
+    result_col,
+    site_col,
+    operator_col=None
+):
+
+    df = df.copy()
+
+    df[date_col] = pd.to_datetime(
+        df[date_col],
+        errors="coerce"
+    )
+
+    df["Original_Result"] = (
+        df[result_col]
+        .astype(str)
+    )
+
+    # Default
+    df["Non_Detect"] = False
+
+    # Use separate operator column if available
+    if (
+        operator_col is not None
+        and operator_col != "No Operator Column"
+        and operator_col in df.columns
+    ):
+
+        NON_DETECT_FLAGS = {
+            "<",
+            "<=",
+            "ND",
+            "LOD",
+            "BDL",
+            "U",
+            "UJ",
+            "LT"
+        }
+
+        df["Non_Detect"] = (
+            df[operator_col]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+            .isin(NON_DETECT_FLAGS)
+        )
+
+    # Otherwise use existing behaviour
+    else:
+
+        df["Non_Detect"] = (
+            df["Original_Result"]
+            .str.strip()
+            .str.startswith("<")
+        )
+
+    df[result_col] = (
+        df["Original_Result"]
+        .str.replace("<=", "", regex=False)
+        .str.replace("<", "", regex=False)
+    )
+
+    df[result_col] = pd.to_numeric(
+        df[result_col],
+        errors="coerce"
+    )
+
+    # Half LOD substitution
+    df.loc[
+        df["Non_Detect"],
+        result_col
+    ] = (
+        df.loc[
+            df["Non_Detect"],
+            result_col
+        ] / 2
+    )
+
+    required_cols = [
+        date_col,
+        det_col,
+        result_col
+    ]
+
+    if site_col is not None:
+        required_cols.append(site_col)
+
+    df = df.dropna(
+        subset=required_cols
+    )
+
+    ph_mask = (
+        df[det_col]
+        .astype(str)
+        .str.contains(
+            "Hydrogen",
+            case=False,
+            na=False
+        )
+    )
+
+    df = df[
+        ~(ph_mask & (df[result_col] <= 0))
+    ]
+
+    df = df[
+        df[result_col] > 0
+    ]
+
+    df = add_component_clean(
+        df,
+        det_col
+    )
+
+    return df
+    
+@st.cache_data
+def build_compliance_summary(
+    df,
+    site_col,
+    det_col,
+    unit_col,
+    result_col,
+    selected_regulations,
+    limit_lookup
+):
+
+    summary_rows = []
+
+    for source in sorted(
+        df[site_col].dropna().unique()
+    ):
+
+        source_df = df[
+            df[site_col] == source
+        ]
+
+        for component in sorted(
+            source_df["Component_Clean"]
+            .dropna()
+            .unique()
+        ):
+
+            component_df = source_df[
+                source_df["Component_Clean"]
+                == component
+            ]
+
+            results = pd.to_numeric(
+                component_df[result_col],
+                errors="coerce"
+            ).dropna()
+
+            if len(results) == 0:
+                continue
+
+            breaches = 0
+            limit_value = None
+            poc = ""
+            regulation_source = ""
+
+            limits = pd.DataFrame(
+                limit_lookup.get(
+                    component,
+                    []
+                )
+            )
+
+            if (
+                not limits.empty
+                and "Regulatory Source" in limits.columns
+            ):
+                limits = limits[
+                    limits["Regulatory Source"]
+                    .isin(selected_regulations)
+                ]
+
+            if not limits.empty:
+
+                numeric_limits = pd.to_numeric(
+                    limits["Limit Value"],
+                    errors="coerce"
+                )
+
+                if numeric_limits.notna().any():
+
+                    limit_idx = numeric_limits.idxmin()
+
+                    limit_row = limits.loc[
+                        limit_idx
+                    ]
+
+                    limit_value = numeric_limits.min()
+
+                    poc = limit_row.get(
+                        "Point of Compliance",
+                        ""
+                    )
+
+                    regulation_source = limit_row.get(
+                        "Regulatory Source",
+                        ""
+                    )
+
+                    breaches = (
+                        results > limit_value
+                    ).sum()
+
+            units = ""
+
+            if (
+                unit_col
+                and unit_col in component_df.columns
+            ):
+
+                unit_values = (
+                    component_df[unit_col]
+                    .dropna()
+                    .astype(str)
+                )
+
+                if not unit_values.empty:
+                    units = unit_values.mode().iloc[0]
+
+            display_name = (
+                component_df[det_col]
+                .mode()
+                .iloc[0]
+            )
+
+            summary_rows.append({
+
+                "Water Source": source,
+                "Component": display_name,
+                "Units": units,
+                "Samples": len(results),
+                "Minimum": round(results.min(), 3),
+                "Mean": round(results.mean(), 3),
+                "P50": round(results.quantile(0.50), 3),
+                "P95": round(results.quantile(0.95), 3),
+                "Maximum": round(results.max(), 3),
+                "Limit Source": regulation_source,
+                "Limit": limit_value,
+                "Point of Compliance": poc,
+                "Breaches": breaches,
+                "% Exceeding": round(
+                    100 * breaches / len(results),
+                    2
+                )
+            })
+
+    return pd.DataFrame(summary_rows)
+    
+@st.cache_data
+def build_pfas_pesticide_summary(
+    site_df,
+    date_col,
+    result_col,
+    pfas_components,
+    pesticide_components
+):
+
+    pfas_results = site_df[
+        site_df["Component_Clean"]
+        .isin(pfas_components)
+    ].copy()
+
+    pesticide_results = site_df[
+        site_df["Component_Clean"]
+        .isin(pesticide_components)
+    ].copy()
+
+    pfas_totals = (
+        pfas_results
+        .groupby(date_col)[result_col]
+        .sum()
+        .reset_index()
+        .rename(
+            columns={
+                result_col: "PFAS Total"
+            }
+        )
+    )
+
+    pesticide_totals = (
+        pesticide_results
+        .groupby(date_col)[result_col]
+        .sum()
+        .reset_index()
+        .rename(
+            columns={
+                result_col: "Pesticides Total"
+            }
+        )
+    )
+
+    return (
+        pfas_results,
+        pesticide_results,
+        pfas_totals,
+        pesticide_totals
+    )
+ 
+# =====================================================
+# PROJECT SETUP
+# =====================================================
 
 loaded_datasets = {}
 
+project_setup = st.expander(
+    "Project Setup & Sheet Selection",
+    expanded=True
+)
+
+with project_setup:
+
+    setup1, setup2, setup3 = st.columns([2, 2, 3])
+
+    with setup1:
+        uploaded_files = st.file_uploader(
+            "Water Quality Dataset(s)",
+            type=["xlsx", "csv"],
+            accept_multiple_files=True
+        )
+
+    with setup2:
+        pcv_file = st.file_uploader(
+            "PCV Database",
+            type=["xlsx", "xlsb", "csv"]
+        )       
+        
 if uploaded_files:
     
     for uploaded_file in uploaded_files:
@@ -724,29 +1364,33 @@ if uploaded_files:
 
                 loaded_datasets[
                     uploaded_file.name
-                ] = pd.read_csv(uploaded_file)
+                ] = load_csv_file(
+                    uploaded_file.getvalue()
+                )
 
             else:
 
-                excel_file = pd.ExcelFile(
-                    uploaded_file
+                sheets = load_excel_file(
+                    uploaded_file.getvalue()
                 )
 
-                for sheet in excel_file.sheet_names:
+                for sheet, df_sheet in sheets.items():
 
                     loaded_datasets[
                         f"{uploaded_file.name} | {sheet}"
-                    ] = pd.read_excel(
-                        excel_file,
-                        sheet_name=sheet
-                    )
-
+                    ] = df_sheet
         except Exception as e:
 
             st.error(
                 f"Error loading {uploaded_file.name}: {e}"
             )
 
+    with setup3:
+
+        selected_dataset = st.selectbox(
+            "Main Dataset",
+            list(loaded_datasets.keys())
+        ) 
 
     # ================================================
     # LOAD PCV DATABASE
@@ -766,27 +1410,16 @@ if uploaded_files:
                 pcv_df = pd.read_excel(
                     pcv_file,
                     engine="pyxlsb"
-                )
+                )      
 
             else:
 
                 pcv_df = pd.read_excel(pcv_file)
 
-            st.sidebar.success(
-                "Using uploaded PCV database"
-            )
-
         # Otherwise use bundled database
         else:
 
-            pcv_df = pd.read_excel(
-                "PCVs.xlsb",
-                engine="pyxlsb"
-            )
-
-            st.sidebar.success(
-                "Currently using default PCV database file"
-            )
+            pcv_df = load_default_pcv()  
 
     except Exception as e:
 
@@ -795,13 +1428,6 @@ if uploaded_files:
         )
 
         pcv_df = None
-
-
-    if pcv_df is not None:
-
-        st.sidebar.caption(
-            f"{len(pcv_df)} limits loaded"
-        )
         
     if pcv_df is not None:
 
@@ -809,6 +1435,11 @@ if uploaded_files:
             pcv_df["Limit Value"],
             errors="coerce"
         )
+        
+        limit_lookup = build_limit_lookup(
+            pcv_df
+        )
+        
         
         try:
 
@@ -828,17 +1459,9 @@ if uploaded_files:
 
             else:
 
-                pfas_df = pd.read_excel(
-                    "PCVs.xlsb",
-                    sheet_name="PFAS",
-                    engine="pyxlsb"
-                )
+                pfas_df = load_default_pfas()
 
-                pesticide_df = pd.read_excel(
-                    "PCVs.xlsb",
-                    sheet_name="Pesticides",
-                    engine="pyxlsb"
-                )
+                pesticide_df = load_default_pesticides()
 
         except Exception as e:
 
@@ -895,6 +1518,19 @@ if uploaded_files:
             "Concentration",
             "Numeric Result",
             "Auth Result"
+        ],
+        
+        "OPERATOR": [
+            "Operator",
+            "Qualifier",
+            "Result Operator",
+            "Result Type",
+            "Analysis Qualifier",
+            "Qualifier Code",
+            "Relation",
+            "Condition",
+            "Qu.",
+            "Qu"
         ]
     }
 
@@ -912,33 +1548,228 @@ if uploaded_files:
 
         return None
         
-    import re
+    def normalise_unit(unit):
 
-    def clean_component_name(text):
-        text = str(text).lower()
+        unit = (
+            str(unit)
+            .strip()
+            .lower()
+            .replace("µ", "u")
+        )
 
-        # remove brackets and contents
-        text = re.sub(r"\(.*?\)", "", text)
+        # remove analyte names
 
-        # replace separators
-        text = text.replace("/", " ")
-        text = text.replace("-", " ")
+        if "mg" in unit:
+            return "mg/l"
 
-        # collapse spaces
-        text = " ".join(text.split())
+        if "ug" in unit:
+            return "ug/l"
 
-        # standardise metals
-        text = text.replace("iron", "iron")
-        text = text.replace("aluminium", "aluminium")
-        text = text.replace("manganese", "manganese")
+        if "ng" in unit:
+            return "ng/l"
 
-        return text.strip()
+        return unit
+        
+    def add_auto_unit_column(df, component_col):
+        """
+        Extract concentration units from component names.
+
+        Examples:
+            Iron (ug Fe/l)       -> ug/l
+            Iron (µg Fe/L)       -> ug/l
+            Aluminium (mg Al/l)  -> mg/l
+            Lead (ug/l)          -> ug/l
+            Copper mg Cu/l       -> mg/l
+        """
+        df = df.copy()
+        df["Auto_Unit"] = ""
+
+        if (
+            component_col is None
+            or component_col not in df.columns
+        ):
+            return df
+
+        parameter_text = (
+            df[component_col]
+            .fillna("")
+            .astype(str)
+            .str.replace("µ", "u", regex=False)
+            .str.replace("μ", "u", regex=False)
+        )
+
+        # Captures the concentration prefix only: mg, ug, ng or g.
+        #
+        # Also permits optional text between the prefix and /l:
+        #   ug Fe/l
+        #   mg Al/l
+        #   ug as Pb/l
+        #   ug/l
+        bracketed_unit = parameter_text.str.extract(
+            r"""
+            \(
+            \s*
+            (mg|ug|ng|g)
+            \s*
+            (?:
+                (?:as\s+)?
+                [A-Za-z][A-Za-z0-9+\-]*
+                \s*
+            )?
+            /
+            \s*
+            (?:l|litre|liter)
+            \s*
+            \)
+            """,
+            flags=re.IGNORECASE | re.VERBOSE,
+            expand=False
+        )
+
+        trailing_unit = parameter_text.str.extract(
+            r"""
+            \s+
+            (mg|ug|ng|g)
+            \s*
+            (?:
+                (?:as\s+)?
+                [A-Za-z][A-Za-z0-9+\-]*
+                \s*
+            )?
+            /
+            \s*
+            (?:l|litre|liter)
+            \s*
+            $
+            """,
+            flags=re.IGNORECASE | re.VERBOSE,
+            expand=False
+        )
+
+        df["Auto_Unit"] = (
+            bracketed_unit
+            .fillna(trailing_unit)
+            .fillna("")
+            .str.lower()
+            .str.strip()
+        )
+
+        # The regex captures only the concentration prefix,
+        # so restore the standard denominator.
+        has_unit = df["Auto_Unit"] != ""
+
+        df.loc[
+            has_unit,
+            "Auto_Unit"
+        ] = (
+            df.loc[
+                has_unit,
+                "Auto_Unit"
+            ]
+            + "/l"
+        )
+
+        return df
+    
+    def clean_unit_value(unit):
+        """Standardise unit text while retaining non-concentration units."""
+        if unit is None or pd.isna(unit):
+            return ""
+
+        unit = str(unit).strip()
+        replacements = {
+            "µg/l": "ug/l",
+            "μg/l": "ug/l",
+            "ug/L": "ug/l",
+            "mg/L": "mg/l",
+            "ng/L": "ng/l",
+            "g/L": "g/l"
+        }
+        return replacements.get(unit, unit)
+
+
+    def get_mode_unit(data, unit_col="Resolved_Unit"):
+        """Return the most common non-blank unit in a dataframe."""
+        if data is None or data.empty or unit_col not in data.columns:
+            return ""
+
+        values = data[unit_col].fillna("").astype(str).str.strip()
+        values = values[values != ""]
+        if values.empty:
+            return ""
+        return clean_unit_value(values.mode().iloc[0])
+
+
+    def value_with_unit(value, unit, decimals=3):
+        """Format a numeric value consistently for reports and tables."""
+        if pd.isna(value):
+            return ""
+        formatted = f"{value:.{decimals}f}"
+        return f"{formatted} {unit}" if unit else formatted
+
+
+    def unit_scale(unit):
+
+        unit = normalise_unit(unit)
+
+        scales = {
+            "mg/l": 1,
+            "ug/l": 0.001,
+            "ng/l": 0.000001
+        }
+
+        return scales.get(unit)
+
+
+    def convert_units(value, from_unit, to_unit):
+
+        if pd.isna(value):
+            return value
+
+        from_scale = unit_scale(from_unit)
+        to_scale = unit_scale(to_unit)
+
+        if from_scale is None:
+            return value
+
+        if to_scale is None:
+            return value
+
+        return value * (from_scale / to_scale)
+
+
+    def get_converted_limit(limit_row, sample_unit):
+
+        raw_limit = pd.to_numeric(
+            limit_row.get("Limit Value"),
+            errors="coerce"
+        )
+
+        if pd.isna(raw_limit):
+            return np.nan
+
+        limit_unit = limit_row.get(
+            "Units",
+            ""
+        )
+
+        return convert_units(
+            raw_limit,
+            limit_unit,
+            sample_unit
+        )
 
     PFAS_COMPONENTS = set()
     PESTICIDE_COMPONENTS = set()
 
     PFAS_LIMIT = np.nan
     PESTICIDE_LIMIT = np.nan
+
+    PFAS_LIMIT_UNIT = ""
+    PESTICIDE_LIMIT_UNIT = ""
+
+    PFAS_COMPANY_LIMITS = {}
+    PESTICIDE_COMPANY_LIMITS = {}
 
     if not pfas_df.empty:
 
@@ -949,15 +1780,40 @@ if uploaded_files:
         }
 
         try:
-            PFAS_LIMIT = float(
-                pfas_df.loc[
-                    pfas_df.iloc[:,0]
-                    .astype(str)
-                    .str.lower()
-                    == "total limit",
-                    pfas_df.columns[1]
-                ].iloc[0]
-            )
+            limit_row = pfas_df.loc[
+                pfas_df.iloc[:,0]
+                .astype(str)
+                .str.lower()
+                == "total limit"
+            ].iloc[0]
+
+            PFAS_LIMIT = float(limit_row.iloc[1])
+            PFAS_LIMIT_UNIT = str(limit_row.iloc[2])
+            
+            found_total = False
+
+            for _, row in pfas_df.iterrows():
+
+                name = str(row.iloc[0]).strip()
+
+                if name.lower() == "total limit":
+                    found_total = True
+                    continue
+
+                if not found_total:
+                    continue
+
+                if pd.isna(row.iloc[0]):
+                    continue
+
+                try:
+                    PFAS_COMPANY_LIMITS[name] = {
+                        "limit": float(row.iloc[1]),
+                        "unit": str(row.iloc[2])
+                    }
+                except:
+                    pass
+
         except:
             pass
 
@@ -970,15 +1826,40 @@ if uploaded_files:
         }
 
         try:
-            PESTICIDE_LIMIT = float(
-                pesticide_df.loc[
-                    pesticide_df.iloc[:,0]
-                    .astype(str)
-                    .str.lower()
-                    == "total limit",
-                    pesticide_df.columns[1]
-                ].iloc[0]
-            )
+            limit_row = pesticide_df.loc[
+                pesticide_df.iloc[:,0]
+                .astype(str)
+                .str.lower()
+                == "total limit"
+            ].iloc[0]
+
+            PESTICIDE_LIMIT = float(limit_row.iloc[1])
+            PESTICIDE_LIMIT_UNIT = str(limit_row.iloc[2])
+            
+            found_total = False
+
+            for _, row in pesticide_df.iterrows():
+
+                name = str(row.iloc[0]).strip()
+
+                if name.lower() == "total limit":
+                    found_total = True
+                    continue
+
+                if not found_total:
+                    continue
+
+                if pd.isna(row.iloc[0]):
+                    continue
+
+                try:
+                    PESTICIDE_COMPANY_LIMITS[name] = {
+                        "limit": float(row.iloc[1]),
+                        "unit": str(row.iloc[2])
+                    }
+                except:
+                    pass          
+
         except:
             pass
 
@@ -1015,11 +1896,6 @@ if uploaded_files:
         return pcv_df[
             pcv_df.apply(row_matches, axis=1)
         ]
-        
-    selected_dataset = st.selectbox(
-        "Main Dataset",
-        list(loaded_datasets.keys())
-    )
 
     df = loaded_datasets[
         selected_dataset
@@ -1050,8 +1926,12 @@ if uploaded_files:
         COLUMN_ALIASES["RESULT"]
     )
     
-    # If no unit column exists, extract units from parameter names
+    OPERATOR_COL = find_column(
+        df,
+        COLUMN_ALIASES["OPERATOR"]
+    )
 
+    # If no unit column exists, extract units from parameter names
     if UNIT_COL is None:
 
         df["Auto_Unit"] = ""
@@ -1062,11 +1942,80 @@ if uploaded_files:
             and DET_COL in df.columns
         ):
 
-            df["Auto_Unit"] = (
+            parameter_text = (
                 df[DET_COL]
-                .astype(str)
-                .str.extract(r"\(([^)]*)\)", expand=False)
                 .fillna("")
+                .astype(str)
+                .str.replace("µ", "u", regex=False)
+                .str.replace("μ", "u", regex=False)
+            )
+
+            # Extracts the concentration prefix from component names such as:
+            # Iron (ug Fe/l)       -> ug
+            # Aluminium (mg Al/l)  -> mg
+            # Lead (ug/l)          -> ug
+            # Copper ug Cu/l       -> ug
+            bracketed_unit = parameter_text.str.extract(
+                r"""
+                \(
+                \s*
+                (mg|ug|ng|g)
+                \s*
+                (?:
+                    (?:as\s+)?
+                    [A-Za-z][A-Za-z0-9+\-]*
+                    \s*
+                )?
+                /
+                \s*
+                (?:l|litre|liter)
+                \s*
+                \)
+                """,
+                flags=re.IGNORECASE | re.VERBOSE,
+                expand=False
+            )
+
+            trailing_unit = parameter_text.str.extract(
+                r"""
+                \s+
+                (mg|ug|ng|g)
+                \s*
+                (?:
+                    (?:as\s+)?
+                    [A-Za-z][A-Za-z0-9+\-]*
+                    \s*
+                )?
+                /
+                \s*
+                (?:l|litre|liter)
+                \s*
+                $
+                """,
+                flags=re.IGNORECASE | re.VERBOSE,
+                expand=False
+            )
+
+            df["Auto_Unit"] = (
+                bracketed_unit
+                .fillna(trailing_unit)
+                .fillna("")
+                .str.lower()
+                .str.strip()
+            )
+
+            # Add the denominator back to extracted prefixes.
+            has_auto_unit = df["Auto_Unit"].ne("")
+
+            df.loc[
+                has_auto_unit,
+                "Auto_Unit"
+            ] = (
+                df.loc[
+                    has_auto_unit,
+                    "Auto_Unit"
+                ]
+                + "/l"
             )
 
         UNIT_COL = "Auto_Unit"
@@ -1080,6 +2029,23 @@ if uploaded_files:
     with st.expander(
         "Column Mapping (main statistics/figure)"
     ):
+        
+        dataset_layout = st.radio(
+            "Dataset Layout",
+            [
+                "Long Format",
+                "Wide Format"
+            ]
+        )
+        
+        first_component_col = None
+
+        if dataset_layout == "Wide Format":
+
+            first_component_col = st.selectbox(
+                "First Component Column",
+                df.columns
+            )
 
         DATE_COL = st.selectbox(
             "Date Column",
@@ -1103,19 +2069,28 @@ if uploaded_files:
         if SITE_COL == "No Site Column":
             SITE_COL = None
 
-        DET_COL = st.selectbox(
-            "Component Column",
-            df.columns,
-            index=df.columns.get_loc(DET_COL)
-            if DET_COL else 0
-        )
+        if dataset_layout == "Long Format":
 
-        RESULT_COL = st.selectbox(
-            "Result Column",
-            df.columns,
-            index=df.columns.get_loc(RESULT_COL)
-            if RESULT_COL else 0
-        )
+            DET_COL = st.selectbox(
+                "Component Column",
+                df.columns,
+                index=df.columns.get_loc(DET_COL)
+                if DET_COL else 0
+            )
+
+            RESULT_COL = st.selectbox(
+                "Result Column",
+                df.columns,
+                index=df.columns.get_loc(RESULT_COL)
+                if RESULT_COL else 0
+            )
+
+        else:
+
+            st.info(
+                "Wide format selected. Component and Result columns will be created automatically."
+            )
+
 
         unit_options = ["No Unit Column"] + list(df.columns)
 
@@ -1128,12 +2103,57 @@ if uploaded_files:
                 else 0
             )
         )
-            
+        
+        operator_options = ["No Operator Column"] + list(df.columns)
+
+        OPERATOR_COL = st.selectbox(
+            "Operator Column",
+            operator_options,
+            index=(
+                operator_options.index(OPERATOR_COL)
+                if OPERATOR_COL in operator_options
+                else 0
+            )
+        )
+         
+    # =====================================================
+    # WIDE FORMAT CONVERSION
+    # =====================================================
+
+    if dataset_layout == "Wide Format":
+
+        start_idx = df.columns.get_loc(
+            first_component_col
+        )
+
+        component_cols = list(
+            df.columns[start_idx:]
+        )
+
+        id_cols = list(
+            df.columns[:start_idx]
+        )
+
+        df = df.melt(
+            id_vars=id_cols,
+            value_vars=component_cols,
+            var_name="Component",
+            value_name="Result"
+        )
+
+        DET_COL = "Component"
+        RESULT_COL = "Result"
+
+        if SITE_COL is not None and SITE_COL not in df.columns:
+            SITE_COL = None
+
+        UNIT_COL = None
+        OPERATOR_COL = None         
     
     required = {
-    "Date": DATE_COL,
-    "Component": DET_COL,
-    "Result": RESULT_COL
+        "Date": DATE_COL,
+        "Component": DET_COL,
+        "Result": RESULT_COL
     }
 
     missing = [
@@ -1167,87 +2187,51 @@ if uploaded_files:
     # CLEANING
     # =================================================
 
-    df[DATE_COL] = pd.to_datetime(
-        df[DATE_COL],
-        errors="coerce"
-    )
+    before_cleaning = len(df)
 
-    # Preserve original result text
-    df["Original_Result"] = df[RESULT_COL].astype(str)
-
-    # Flag results reported with <
-    df["Non_Detect"] = (
-        df["Original_Result"]
-        .str.strip()
-        .str.startswith("<")
-    )
-
-    # Extract numeric component
-    df[RESULT_COL] = (
-        df["Original_Result"]
-        .astype(str)
-        .str.replace("<", "", regex=False)
-    )
-
-    df[RESULT_COL] = pd.to_numeric(
-        df[RESULT_COL],
-        errors="coerce"
-    )
-
-    # Apply half-LOD substitution for non-detects
-    df.loc[
-        df["Non_Detect"],
-        RESULT_COL
-    ] = (
-        df.loc[
-            df["Non_Detect"],
-            RESULT_COL
-        ] / 2
-    )
-    
-    required_cols = [
+    df = clean_dataset(
+        df,
         DATE_COL,
         DET_COL,
-        RESULT_COL
-    ]
+        RESULT_COL,
+        SITE_COL,
+        OPERATOR_COL
+    )
 
-    if SITE_COL is not None:
-        required_cols.append(SITE_COL)
-
-    df = df.dropna(subset=required_cols)
-
-    ph_mask = (
-        df[DET_COL]
-        .str.contains(
-            "Hydrogen",
-            case=False,
-            na=False
+    # One authoritative unit column used throughout the app.
+    df["Resolved_Unit"] = ""
+    if (
+        UNIT_COL is not None
+        and UNIT_COL != "No Unit Column"
+        and UNIT_COL in df.columns
+    ):
+        df["Resolved_Unit"] = (
+            df[UNIT_COL]
+            .fillna("")
+            .astype(str)
+            .apply(clean_unit_value)
         )
-    )
 
-    df = df[
-        ~(ph_mask & (df[RESULT_COL] <= 0))
-    ]
-    
-    # Remove zero and negative results
+    if "manual_component_units" not in st.session_state:
+        st.session_state.manual_component_units = {}
 
-    before_zero_removal = len(df)
+    for component_key, manual_unit in st.session_state.manual_component_units.items():
+        if manual_unit:
+            df.loc[
+                df["Component_Clean"] == component_key,
+                "Resolved_Unit"
+            ] = manual_unit
 
-    df = df[
-        df[RESULT_COL] > 0
-    ]
+    UNIT_COL = "Resolved_Unit"
 
-    zero_removed = (
-        before_zero_removal
-        - len(df)
-    )
-    
     cleaned_count = len(df)
 
     qa_removed = (
-        original_count -
+        before_cleaning -
         cleaned_count
     )
+
+    zero_removed = 0
 
     # =================================================
     # SIDEBAR
@@ -1256,22 +2240,25 @@ if uploaded_files:
     st.sidebar.header("Filters")
 
     selected_site = st.sidebar.selectbox(
-        "Water Source",
+        "Source",
         sorted(df[SITE_COL].unique())
     )
 
     filtered = df[
         df[SITE_COL] == selected_site
     ].copy()
-    
-    filtered["Component_Clean"] = (
-        filtered[DET_COL]
-        .apply(clean_component_name)
-    )
 
     component_lookup = (
         filtered.groupby("Component_Clean")[DET_COL]
-        .agg(lambda x: x.mode().iloc[0])
+        .agg(
+            lambda x: min(
+                x.dropna().astype(str),
+                key=lambda value: (
+                    len(clean_component_name(value)),
+                    len(value)
+                )
+            )
+        )
         .to_dict()
     )
 
@@ -1285,83 +2272,312 @@ if uploaded_files:
     selected_component = clean_component_name(
         selected_display
     )
-    
+
+    st.sidebar.markdown("---")
+    st.sidebar.header("Limits and Units")
+    st.sidebar.subheader("Limits")
+
     selected_regulations = st.sidebar.multiselect(
         "Regulations",
         [
-            "DWI",
+            "WS(WQ) 2016",
+            "PWS (Scotland) 2014",
             "EU rDWD",
-            "WHO"
+            "WHO",
+            "US EPA NPDWR",
+            "Anglian Water",
+            "Wessex Water",
+            "Severn Trent (Boughton)",
+            "South East Water"
         ],
-        default=["DWI"]
+        default=["WS(WQ) 2016"]
     )
 
+    use_manual_pcvs = st.sidebar.checkbox(
+        "Add Manual Limit Entries",
+        value=False,
+        help=(
+            "Manually add component limits when a component name has not "
+            "been matched automatically."
+        )
+    )
+
+    manual_regulations = []
+    manual_pcvs = []
+
+    if use_manual_pcvs:
+        manual_regulations = st.sidebar.multiselect(
+            "Regulatory Source(s)",
+            sorted(
+                pcv_df["Regulatory Source"]
+                .dropna()
+                .unique()
+            )
+        )
+
+        for regulation in manual_regulations:
+            regulation_pcvs = sorted(
+                pcv_df.loc[
+                    pcv_df["Regulatory Source"] == regulation,
+                    "Parameter"
+                ]
+                .dropna()
+                .unique()
+            )
+
+            selected_pcvs = st.sidebar.multiselect(
+                f"{regulation} Parameter(s)",
+                regulation_pcvs,
+                key=f"manual_pcv_{regulation}"
+            )
+            manual_pcvs.extend(selected_pcvs)
+
+    st.sidebar.subheader("Units")
+
+    existing_component_rows = df[
+        df["Component_Clean"] == selected_component
+    ]
+    detected_component_unit = get_mode_unit(
+        existing_component_rows,
+        "Resolved_Unit"
+    )
+
+    use_manual_component_unit = st.sidebar.checkbox(
+        "Set unit for selected component",
+        value=False,
+        help=(
+            "Enable this to assign or override the unit for the selected "
+            "component across figures, tables, compliance calculations "
+            "and exported reports."
+        ),
+        key=f"use_manual_unit_{selected_component}"
+    )
+
+    selected_manual_unit = ""
+
+    if use_manual_component_unit:
+        common_unit_options = [
+            "mg/l", "ug/l", "ng/l", "g/l", "NTU", "Hazen",
+            "uS/cm", "mS/cm", "pH units", "degrees C", "%",
+            "CFU/100 ml", "MPN/100 ml", "Custom..."
+        ]
+
+        saved_component_unit = st.session_state.manual_component_units.get(
+            selected_component,
+            detected_component_unit
+        )
+
+        if saved_component_unit and saved_component_unit not in common_unit_options:
+            default_unit_option = "Custom..."
+        elif saved_component_unit in common_unit_options:
+            default_unit_option = saved_component_unit
+        else:
+            default_unit_option = common_unit_options[0]
+
+        selected_unit_option = st.sidebar.selectbox(
+            "Unit for selected component",
+            common_unit_options,
+            index=common_unit_options.index(default_unit_option),
+            help="Select the unit that applies to the currently selected component.",
+            key=f"unit_select_{selected_component}"
+        )
+
+        if selected_unit_option == "Custom...":
+            selected_manual_unit = st.sidebar.text_input(
+                "Custom unit",
+                value=(
+                    saved_component_unit
+                    if default_unit_option == "Custom..."
+                    else ""
+                ),
+                key=f"custom_unit_{selected_component}"
+            ).strip()
+        else:
+            selected_manual_unit = selected_unit_option
+
+        if selected_manual_unit:
+            selected_manual_unit = clean_unit_value(selected_manual_unit)
+            st.session_state.manual_component_units[
+                selected_component
+            ] = selected_manual_unit
+            df.loc[
+                df["Component_Clean"] == selected_component,
+                "Resolved_Unit"
+            ] = selected_manual_unit
+            st.sidebar.caption(
+                f"Using {selected_manual_unit} for {selected_display}"
+            )
+    elif detected_component_unit:
+        st.sidebar.caption(
+            f"Detected unit: {detected_component_unit}"
+        )
+    else:
+        st.sidebar.caption(
+            "No unit detected. Enable the checkbox above to assign one."
+        )
+
+    # Rebuild this view after applying the component-level override.
+    filtered = df[df[SITE_COL] == selected_site].copy()
+    
+    st.sidebar.markdown("---")
+    st.sidebar.header("Time")
+
+
+    # Date limits for the currently selected water source.
     min_date = filtered[DATE_COL].min().date()
     max_date = filtered[DATE_COL].max().date()
 
     quick_period = st.sidebar.radio(
         "Quick Period",
         [
-            "Custom",
+            "All Data",
             "Last 12 Months",
             "Last 3 Years",
-            "Last 5 years",
-            "All Data"
-        ]
+            "Last 5 Years",
+            "Custom"
+        ],
+        index=0,
+        key="quick_period"
     )
 
-    if quick_period == "Last 12 Months":
-        default_start = max_date - timedelta(days=365)
+    # Only show and use manual date inputs when Custom is selected.
+    if quick_period == "Custom":
+
+        start_date = st.sidebar.date_input(
+            "Start Date",
+            value=min_date,
+            min_value=min_date,
+            max_value=max_date,
+            key="custom_start_date"
+        )
+
+        end_date = st.sidebar.date_input(
+            "End Date",
+            value=max_date,
+            min_value=min_date,
+            max_value=max_date,
+            key="custom_end_date"
+        )
+
+        if start_date > end_date:
+            st.sidebar.error(
+                "Start Date must be on or before End Date."
+            )
+            st.stop()
+
+    elif quick_period == "Last 12 Months":
+
+        end_date = max_date
+        start_date = max(
+            min_date,
+            (
+                pd.Timestamp(max_date)
+                - pd.DateOffset(months=12)
+            ).date()
+        )
 
     elif quick_period == "Last 3 Years":
-        default_start = max_date - timedelta(days=1095)
-        
+
+        end_date = max_date
+        start_date = max(
+            min_date,
+            (
+                pd.Timestamp(max_date)
+                - pd.DateOffset(years=3)
+            ).date()
+        )
+
     elif quick_period == "Last 5 Years":
-        default_start = max_date - timedelta(days=1825)
+
+        end_date = max_date
+        start_date = max(
+            min_date,
+            (
+                pd.Timestamp(max_date)
+                - pd.DateOffset(years=5)
+            ).date()
+        )
 
     else:
-        default_start = min_date
+        # All Data always uses the full available dataset period.
+        start_date = min_date
+        end_date = max_date
 
-    start_date = st.sidebar.date_input(
-        "Start Date",
-        value=default_start
-    )
+    if quick_period != "Custom":
+        st.sidebar.caption(
+            f"Using {start_date:%d %b %Y} to "
+            f"{end_date:%d %b %Y}"
+        )
 
-    end_date = st.sidebar.date_input(
-        "End Date",
-        value=max_date
+    filtered = filtered[
+        filtered["Component_Clean"] == selected_component
+    ].copy()
+
+    # Include every result occurring on the end date, including timestamps.
+    filter_start = pd.to_datetime(start_date)
+    filter_end_exclusive = (
+        pd.to_datetime(end_date)
+        + pd.Timedelta(days=1)
     )
 
     filtered = filtered[
-        filtered["Component_Clean"]
-        == selected_component
-    ]
-
-    filtered = filtered[
-        (filtered[DATE_COL] >= pd.to_datetime(start_date))
+        (filtered[DATE_COL] >= filter_start)
         &
-        (filtered[DATE_COL] <= pd.to_datetime(end_date))
-    ]
+        (filtered[DATE_COL] < filter_end_exclusive)
+    ].copy()
+            
+    sample_unit = get_mode_unit(
+        filtered,
+        "Resolved_Unit"
+    )
 
     component_limits = pd.DataFrame()
 
     if pcv_df is not None:
 
-        component_limits = get_component_limits(
-            pcv_df,
-            selected_component
+        # automatic match
+        component_limits = pd.DataFrame(
+            limit_lookup.get(
+                selected_component,
+                []
+            )
         )
 
-        component_limits = component_limits[
-            component_limits["Regulatory Source"]
-            .isin(selected_regulations)
-        ]
-       
-    st.write(selected_component)
+        # manual additions
+        if manual_pcvs:
 
-    st.write("Matches found:")
-    st.write(len(component_limits))
+            manual_limits = pcv_df[
+                pcv_df["Parameter"]
+                .isin(manual_pcvs)
+            ]
 
+            component_limits = pd.concat(
+                [
+                    component_limits,
+                    manual_limits
+                ],
+                ignore_index=True
+            )
+
+        component_limits = component_limits.drop_duplicates()
+
+        # allow both main regulations and manually selected regulation groups
+        allowed_regulations = set(selected_regulations)
+
+        if manual_regulations:
+            allowed_regulations.update(
+                manual_regulations
+            )
+
+        if (
+            not component_limits.empty
+            and "Regulatory Source" in component_limits.columns
+        ):
+            component_limits = component_limits[
+                component_limits["Regulatory Source"]
+                .isin(allowed_regulations)
+            ]    
+            
     # =================================================
     # SUMMARY
     # =================================================
@@ -1369,7 +2585,9 @@ if uploaded_files:
     monitoring_start = df[DATE_COL].min()
     monitoring_end = df[DATE_COL].max()
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4 = st.columns(
+        [1,1,1,1.45]
+    )
 
     c1.metric(
         "Results Imported",
@@ -1386,28 +2604,26 @@ if uploaded_files:
         df[SITE_COL].nunique()
     )
 
+    # c4.metric(
+        # "QA Removed",
+        # f"{qa_removed:,}"
+    # )
+
+    # c5.metric(
+        # "Zero Values Removed",
+        # f"{zero_removed:,}"
+    # )
+
     c4.metric(
-        "QA Removed",
-        f"{qa_removed:,}"
-    )
-
-    c5.metric(
-        "Zero Values Removed",
-        f"{zero_removed:,}"
-    )
-
-    st.info(
-        f"""
-        Monitoring Period:
-        {monitoring_start.strftime('%d %b %Y')}
-        to
-        {monitoring_end.strftime('%d %b %Y')}
-        """
+        "Monitoring Period",
+        f"{monitoring_start:%d %b %Y} - {monitoring_end:%d %b %Y}"
     )
 
     # =================================================
     # TABS
     # =================================================
+    
+    summary_df = pd.DataFrame()
 
     tab1, tab2, tab2a, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         [
@@ -1435,9 +2651,19 @@ if uploaded_files:
             DET_COL,
             RESULT_COL
         ]
+        
+        if (
+            OPERATOR_COL is not None
+            and OPERATOR_COL != "No Operator Column"
+        ):
+            display_cols.append(OPERATOR_COL)
 
-        if UNIT_COL != "No Unit Column":
-            display_cols.insert(3, UNIT_COL)
+        if (
+            UNIT_COL is not None
+            and UNIT_COL != "No Unit Column"
+            and UNIT_COL in filtered.columns
+        ):
+            display_cols.insert(3, UNIT_COL)          
 
         st.dataframe(
             filtered[display_cols],
@@ -1453,7 +2679,8 @@ if uploaded_files:
         stats_df = statistics_table(
             filtered,
             RESULT_COL,
-            selected_component
+            selected_component,
+            sample_unit
         )
 
         st.dataframe(
@@ -1491,13 +2718,8 @@ if uploaded_files:
             &
             (df[DATE_COL] >= pd.to_datetime(start_date))
             &
-            (df[DATE_COL] <= pd.to_datetime(end_date))
+            (df[DATE_COL] < filter_end_exclusive)
         ].copy()
-
-        site_df["Component_Clean"] = (
-            site_df[DET_COL]
-            .apply(clean_component_name)
-        )
   
         available_components = sorted(
             site_df["Component_Clean"]
@@ -1741,9 +2963,11 @@ if uploaded_files:
 
                 if pcv_df is not None:
 
-                    limits = get_component_limits(
-                        pcv_df,
-                        component
+                    limits = pd.DataFrame(
+                        limit_lookup.get(
+                            component,
+                            []
+                        )
                     )
 
                     limits = limits[
@@ -1759,6 +2983,11 @@ if uploaded_files:
                         ).min()
 
                         if pd.notna(limit_value):
+
+                            limit_value = get_converted_limit(
+                                limit_row,
+                                units
+                            )
 
                             breaches = (
                                 results > limit_value
@@ -1863,14 +3092,6 @@ if uploaded_files:
         mean = filtered[RESULT_COL].mean()
         p50 = filtered[RESULT_COL].quantile(0.50)
         p95 = filtered[RESULT_COL].quantile(0.95)
-
-        units = ""
-
-        if len(filtered):
-               if UNIT_COL == "No Unit Column":
-                    units = ""
-               else:
-                    units = filtered[UNIT_COL].iloc[0]
                         
         detect_df = filtered[~filtered["Non_Detect"]]
         nondetect_df = filtered[filtered["Non_Detect"]]
@@ -1921,7 +3142,11 @@ if uploaded_files:
                 x=[filtered[DATE_COL].min(), filtered[DATE_COL].max()],
                 y=[mean, mean],
                 mode="lines",
-                name=f"Mean ({mean:.2f})",
+                name=(
+                    f"Mean ({mean:.2f} {sample_unit})"
+                    if sample_unit
+                    else f"Mean ({mean:.2f})"
+                ),
                 line=dict(
                     color="#000000",
                     dash="dot"
@@ -1935,7 +3160,11 @@ if uploaded_files:
                 x=[filtered[DATE_COL].min(), filtered[DATE_COL].max()],
                 y=[p50, p50],
                 mode="lines",
-                name=f"P50 ({p50:.2f})",
+                name=(
+                    f"P50 ({p50:.2f} {sample_unit})"
+                    if sample_unit
+                    else f"P50 ({p50:.2f})"
+                ),
                 line=dict(
                     color="#4B0082",
                     dash="dash"
@@ -1949,7 +3178,11 @@ if uploaded_files:
                 x=[filtered[DATE_COL].min(), filtered[DATE_COL].max()],
                 y=[p95, p95],
                 mode="lines",
-                name=f"P95 ({p95:.2f})",
+                name=(
+                    f"P95 ({p95:.2f} {sample_unit})"
+                    if sample_unit
+                    else f"P95 ({p95:.2f})"
+                ),
                 line=dict(
                     color="#FF00FF",
                     dash="dash"
@@ -1958,13 +3191,15 @@ if uploaded_files:
             )
         )
 
-
         if not component_limits.empty:
 
             colours = {
-                "DWI": "red",
+                "WS(WQ) 2016": "red",
                 "EU rDWD": "blue",
-                "WHO": "green"
+                "WHO": "green",
+                "Anglian Water": "orange",
+                "Wessex Water": "black",
+                "Severn Trent (Boughton)": "yellow"
             }
             
             colour_palette = [
@@ -1983,17 +3218,32 @@ if uploaded_files:
             for _, row in component_limits.iterrows():
                 
 
-                limit_value = pd.to_numeric(
-                    row["Limit Value"],
-                    errors="coerce"
-                )
+                limit_value = get_converted_limit(
+                    row,
+                    sample_unit
+                )              
 
                 if pd.isna(limit_value):
                     continue
 
                 poc = row.get("Point of Compliance", "")
-                
+
                 regulation = row.get("Regulatory Source", "")
+
+                pcv_unit = str(
+                    row.get("Units", "")
+                )
+
+                original_limit = row.get(
+                    "Limit Value",
+                    ""
+                )
+
+                display_unit = (
+                    sample_unit
+                    if sample_unit
+                    else pcv_unit
+                )
                                 
                 colour_key = (
                     str(regulation).strip(),
@@ -2015,7 +3265,10 @@ if uploaded_files:
                         ],
                         y=[limit_value, limit_value],
                         mode="lines",
-                        name=f"{regulation} - {poc} ({limit_value} {units})",
+                        name=(
+                            f"{regulation} - {poc} "
+                            f"({limit_value:.3f} {display_unit})"
+                        ),
                         line=dict(
                             color=line_colour,
                             width=3,
@@ -2023,12 +3276,13 @@ if uploaded_files:
                         ),
                         hovertemplate=(
                             f"{regulation} - {poc}<br>"
-                            f"Limit: {limit_value} {units}"
+                            f"Original PCV: {original_limit} {pcv_unit}<br>"
+                            f"Converted Limit: {limit_value:.3f} {display_unit}"
                             "<extra></extra>"
                         )
                     )
                 )
-
+                
                 hover_text = (
                     f"<b>{row.get('Regulatory Source','')}</b><br>"
                     f"CAS Number: {row.get('CAS Number','N/A')}<br>"
@@ -2037,7 +3291,8 @@ if uploaded_files:
                     f"Jurisdiction: {row.get('Jurisdiction','N/A')}<br>"
                     f"Point of Compliance: {row.get('Point of Compliance','N/A')}<br>"
                     f"Effective Date: {row.get('Effective Date','N/A')}<br>"
-                    f"Limit: {limit_value} {row.get('Units','')}"
+                    f"Original PCV: {original_limit} {pcv_unit}<br>"
+                    f"Converted Limit: {limit_value:.3f} {display_unit}"
                 )
 
                 fig.add_trace(
@@ -2110,10 +3365,10 @@ if uploaded_files:
         fig.update_yaxes(
             title=(
                 selected_component
-                if units and f"({units})" in str(selected_component)
+                if sample_unit and f"({sample_unit})" in str(selected_component)
                 else (
-                    f"{selected_component} ({units})"
-                    if units
+                    f"{selected_component} ({sample_unit})"
+                    if sample_unit
                     else selected_component
                 )
             ),
@@ -2131,7 +3386,17 @@ if uploaded_files:
 
         st.plotly_chart(
             fig,
-            use_container_width=True
+            use_container_width=True,
+            config={
+                "displaylogo": False,
+                "toImageButtonOptions": {
+                    "format": "png",
+                    "filename": "water_quality_figure",
+                    "width": 2400,
+                    "height": 1350,
+                    "scale": 2
+                }
+            }
         )
         
         st.info(
@@ -2159,33 +3424,11 @@ if uploaded_files:
             selected_component: fig
         }
 
-        fig.update_layout(
-        width=2200,
-        height=1200,
-        font=dict(size=20),
-        title_font=dict(size=30),
-        margin=dict(
-            l=100,
-            r=150,
-            t=120,
-            b=100
-        ),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="center",
-            x=0.5
-        )
-    )
-
-    png_bytes = fig.to_image(
-        format="png",
-        width=2200,
-        height=1200,
-        scale=2
-    )
-        
+        png_export_fig = prepare_figure_for_png(
+            export_fig,
+            width=2400,
+            height=1350
+        )    
                 
     # =================================================
     # Limits/PCV
@@ -2203,9 +3446,9 @@ if uploaded_files:
 
             for _, limit_row in component_limits.iterrows():
 
-                limit_value = pd.to_numeric(
-                    limit_row["Limit Value"],
-                    errors="coerce"
+                limit_value = get_converted_limit(
+                    limit_row,
+                    sample_unit
                 )
                 
                 poc = limit_row.get("Point of Compliance", "")
@@ -2224,7 +3467,7 @@ if uploaded_files:
                 st.subheader(
                     f"{selected_display} | "
                     f"{regulation} - {poc} "
-                    f"({limit_value} {limit_row.get('Units','')})"
+                    f"({limit_value:.3f} {sample_unit})"
                 )
 
                 st.metric(
@@ -2258,164 +3501,56 @@ if uploaded_files:
 
                     st.success(
                         "No exceedances recorded."
-                    )    
-                           
-    # =================================================
-    # COMPLIANCE SUMMARY TAB
-    # =================================================
-
+                    )  
+                    
+    ############################################################################
+    # COMPLIANCE SUMMARY
+    ############################################################################                   
+                                                             
     with tab5:
 
         st.subheader(
             "Compliance Summary by Water Source"
         )
 
-        summary_rows = []
+        generate_summary = st.button(
+            "Generate Compliance Summary"
+        )
 
-        for source in sorted(
-            df[SITE_COL].dropna().unique()
-        ):
+        if generate_summary:
 
-            source_df = df[
-                df[SITE_COL] == source
-            ]
-            
-            source_df = source_df.copy()
-
-            source_df["Component_Clean"] = (
-                source_df[DET_COL]
-                .apply(clean_component_name)
+            summary_df = build_compliance_summary(
+                df,
+                SITE_COL,
+                DET_COL,
+                UNIT_COL,
+                RESULT_COL,
+                tuple(selected_regulations),
+                limit_lookup
             )
 
-            for component in sorted(
-                source_df["Component_Clean"]
-                .dropna()
-                .unique()
-            ):
+            if not summary_df.empty:
 
-                component_df = source_df[
-                    source_df["Component_Clean"]
-                    == component
-                ]
+                summary_df = summary_df.sort_values(
+                    by="% Exceeding",
+                    ascending=False,
+                    na_position="last"
+                ).reset_index(drop=True)
 
-                results = pd.to_numeric(
-                    component_df[RESULT_COL],
-                    errors="coerce"
-                ).dropna()
-
-                if len(results) == 0:
-                    continue
-
-                min_value = results.min()
-                mean_value = results.mean()
-                p50_value = results.quantile(0.50)
-                p95_value = results.quantile(0.95)
-                max_value = results.max()
-
-                breaches = 0
-                limit_value = None
-
-                if pcv_df is not None:
-
-                    limits = get_component_limits(
-                        pcv_df,
-                        component
-                    )
-
-
-                    limits = limits[
-                        limits["Regulatory Source"]
-                        .isin(selected_regulations)
-                    ]
-
-                    poc = ""
-                    
-                    regulation_source = ""
-
-                    if not limits.empty:
-                        limit_value = pd.to_numeric(
-                            limits["Limit Value"],
-                            errors="coerce"
-                        ).min()
-
-                        numeric_limits = pd.to_numeric(
-                            limits["Limit Value"],
-                            errors="coerce"
-                        )
-
-                        if numeric_limits.notna().any():
-
-                            limit_idx = numeric_limits.idxmin()
-                            
-                            limit_row = limits.loc[limit_idx]
-
-                            poc = limit_row.get(
-                                "Point of Compliance",
-                                ""
-                            )
-
-                            regulation_source = limit_row.get(
-                                "Regulatory Source",
-                                ""
-)
-
-                        else:
-
-                            poc = ""
-
-                        if pd.notna(limit_value):
-                            breaches = (
-                                results > limit_value
-                            ).sum()
-                        else:
-                            breaches = 0
-
-                units = ""
-
-                if UNIT_COL:
-                    unit_values = (
-                        component_df[UNIT_COL]
-                        .dropna()
-                        .astype(str)
-                    )
-
-                    if not unit_values.empty:
-                        units = unit_values.mode().iloc[0]
-                
-                display_name = (
-                    component_df[DET_COL]
-                    .mode()
-                    .iloc[0]
-                )
-                
-                summary_rows.append(
-                    {
-                        "Water Source": source,
-                        "Component": display_name,
-                        "Units": units,
-                        "Samples": len(results),
-                        "Minimum": round(min_value, 3),
-                        "Mean": round(mean_value, 3),
-                        "P50": round(p50_value, 3),
-                        "P95": round(p95_value, 3),
-                        "Maximum": round(max_value, 3),
-                        "Limit Source": regulation_source,
-                        "Limit": limit_value,
-                        "Point of Compliance": poc,
-                        "Breaches": breaches,
-                        "% Exceeding": round(
-                            100 * (breaches / len(results)),
-                            2
-                        ) if len(results) > 0 else 0
-                    }
+                st.dataframe(
+                    summary_df,
+                    use_container_width=True
                 )
 
-        summary_df = pd.DataFrame(summary_rows)
+                st.info(
+                    "Click on the 'Breaches' or '% Exceeding' columns to sort by the number, or proportion, of limit breaches for a given component."
+                )
 
-        st.dataframe(
-            summary_df,
-            use_container_width=True
-        )
+            else:
+
+                st.info(
+                    "No compliance results found."
+                )
 
 
     # =================================================
@@ -2472,6 +3607,11 @@ if uploaded_files:
             compare_df_a,
             COLUMN_ALIASES["UNIT"]
         )
+        
+        OPERATOR_A_DEFAULT = find_column(
+            compare_df_a,
+            COLUMN_ALIASES["OPERATOR"]
+        )
                 
         DATE_B_DEFAULT = find_column(
             compare_df_b,
@@ -2496,7 +3636,12 @@ if uploaded_files:
         UNIT_B_DEFAULT = find_column(
             compare_df_b,
             COLUMN_ALIASES["UNIT"]
-        )       
+        ) 
+
+        OPERATOR_B_DEFAULT = find_column(
+            compare_df_b,
+            COLUMN_ALIASES["OPERATOR"]
+        )        
 
         # ---------------------------------------
         # COLUMN MAPPING
@@ -2507,6 +3652,26 @@ if uploaded_files:
         with c1:
 
             with st.expander("Source A Column Mapping"):
+                
+                LAYOUT_A = st.radio(
+                    "Layout A",
+                    [
+                        "Long Format",
+                        "Wide Format"
+                    ],
+                    key="LAYOUT_A"
+                )
+
+                FIRST_COMPONENT_A = None
+
+                if LAYOUT_A == "Wide Format":
+
+                    FIRST_COMPONENT_A = st.selectbox(
+                        "First Component Column A",
+                        compare_df_a.columns,
+                        key="FIRST_COMPONENT_A"
+                    )
+                            
 
                 DATE_A = st.selectbox(
                     "Date Column A",
@@ -2535,43 +3700,97 @@ if uploaded_files:
                     key="SITE_A"
                 )
 
-                COMPONENT_A = st.selectbox(
-                    "Component Column A",
-                    compare_df_a.columns,
-                    index=(
-                        compare_df_a.columns.get_loc(COMPONENT_A_DEFAULT)
-                        if COMPONENT_A_DEFAULT
-                        else 0
-                    ),
-                    key="COMPONENT_A"
-                )
+                if LAYOUT_A == "Long Format":
 
-                RESULT_A = st.selectbox(
-                    "Result Column A",
-                    compare_df_a.columns,
-                    index=(
-                        compare_df_a.columns.get_loc(RESULT_A_DEFAULT)
-                        if RESULT_A_DEFAULT
-                        else 0
-                    ),
-                    key="RESULT_A"
-                )
+                    COMPONENT_A = st.selectbox(
+                        "Component Column A",
+                        compare_df_a.columns,
+                        index=(
+                            compare_df_a.columns.get_loc(COMPONENT_A_DEFAULT)
+                            if COMPONENT_A_DEFAULT
+                            else 0
+                        ),
+                        key="COMPONENT_A"
+                    )
+
+                    RESULT_A = st.selectbox(
+                        "Result Column A",
+                        compare_df_a.columns,
+                        index=(
+                            compare_df_a.columns.get_loc(RESULT_A_DEFAULT)
+                            if RESULT_A_DEFAULT
+                            else 0
+                        ),
+                        key="RESULT_A"
+                    )
+
+                else:
+
+                    st.info(
+                        "Wide format selected. Component and Result columns will be created automatically."
+                    )
+
                 
-                UNIT_A_OPTIONS = ["No Unit Column"] + list(compare_df_a.columns)
+                if LAYOUT_A == "Long Format":
 
-                UNIT_A = st.selectbox(
-                    "Unit Column A",
-                    UNIT_A_OPTIONS,
-                    index=(
-                        UNIT_A_OPTIONS.index(UNIT_A_DEFAULT)
-                        if UNIT_A_DEFAULT in UNIT_A_OPTIONS
-                        else 0
-                    ),
-                    key="UNIT_A"
-                )
+                    UNIT_A_OPTIONS = ["No Unit Column"] + list(compare_df_a.columns)
+
+                    UNIT_A = st.selectbox(
+                        "Unit Column A",
+                        UNIT_A_OPTIONS,
+                        index=(
+                            UNIT_A_OPTIONS.index(UNIT_A_DEFAULT)
+                            if UNIT_A_DEFAULT in UNIT_A_OPTIONS
+                            else 0
+                        ),
+                        key="UNIT_A"
+                    )
+                    
+                else:
+
+                    UNIT_A = "No Unit Column"
+ 
+                if LAYOUT_A == "Long Format":
+
+                    OPERATOR_A_OPTIONS = ["No Operator Column"] + list(compare_df_a.columns)
+
+                    OPERATOR_A = st.selectbox(
+                        "Operator Column A",
+                        OPERATOR_A_OPTIONS,
+                        index=(
+                            OPERATOR_A_OPTIONS.index(OPERATOR_A_DEFAULT)
+                            if OPERATOR_A_DEFAULT in OPERATOR_A_OPTIONS
+                            else 0
+                        ),
+                        key="OPERATOR_A"
+                    )
+
+                else:
+                    OPERATOR_A = "No Operator Column"                    
+
+ 
         with c2:
 
             with st.expander("Source B Column Mapping"):
+                
+                LAYOUT_B = st.radio(
+                    "Layout B",
+                    [
+                        "Long Format",
+                        "Wide Format"
+                    ],
+                    key="LAYOUT_B"
+                )
+
+                FIRST_COMPONENT_B = None
+
+                if LAYOUT_B == "Wide Format":
+
+                    FIRST_COMPONENT_B = st.selectbox(
+                        "First Component Column B",
+                        compare_df_b.columns,
+                        key="FIRST_COMPONENT_B"
+                    )
 
                 DATE_B = st.selectbox(
                     "Date Column B",
@@ -2600,40 +3819,158 @@ if uploaded_files:
                     key="SITE_B"
                 )
 
-                COMPONENT_B = st.selectbox(
-                    "Component Column B",
-                    compare_df_b.columns,
-                    index=(
-                        compare_df_b.columns.get_loc(COMPONENT_B_DEFAULT)
-                        if COMPONENT_B_DEFAULT
-                        else 0
-                    ),
-                    key="COMPONENT_B"
-                )
+                if LAYOUT_B == "Long Format":
 
-                RESULT_B = st.selectbox(
-                    "Result Column B",
-                    compare_df_b.columns,
-                    index=(
-                        compare_df_b.columns.get_loc(RESULT_B_DEFAULT)
-                        if RESULT_B_DEFAULT
-                        else 0
-                    ),
-                    key="RESULT_B"
-                )
+                    COMPONENT_B = st.selectbox(
+                        "Component Column B",
+                        compare_df_b.columns,
+                        index=(
+                            compare_df_b.columns.get_loc(COMPONENT_B_DEFAULT)
+                            if COMPONENT_B_DEFAULT
+                            else 0
+                        ),
+                        key="COMPONENT_B"
+                    )
+
+                    RESULT_B = st.selectbox(
+                        "Result Column B",
+                        compare_df_b.columns,
+                        index=(
+                            compare_df_b.columns.get_loc(RESULT_B_DEFAULT)
+                            if RESULT_B_DEFAULT
+                            else 0
+                        ),
+                        key="RESULT_B"
+                    )
+
+                else:
+
+                    st.info(
+                        "Wide format selected. Component and Result columns will be created automatically."
+                    )
                 
-                UNIT_B_OPTIONS = ["No Unit Column"] + list(compare_df_b.columns)
+                if LAYOUT_B == "Long Format":
 
-                UNIT_B = st.selectbox(
-                    "Unit Column B",
-                    UNIT_B_OPTIONS,
-                    index=(
-                        UNIT_B_OPTIONS.index(UNIT_B_DEFAULT)
-                        if UNIT_B_DEFAULT in UNIT_B_OPTIONS
-                        else 0
-                    ),
-                    key="UNIT_B"
-                )            
+                    UNIT_B_OPTIONS = ["No Unit Column"] + list(compare_df_b.columns)
+
+                    UNIT_B = st.selectbox(
+                        "Unit Column B",
+                        UNIT_B_OPTIONS,
+                        index=(
+                            UNIT_B_OPTIONS.index(UNIT_B_DEFAULT)
+                            if UNIT_B_DEFAULT in UNIT_B_OPTIONS
+                            else 0
+                        ),
+                        key="UNIT_B"
+                    )
+
+                else:
+
+                    UNIT_B = "No Unit Column"   
+
+                if LAYOUT_B == "Long Format":
+
+                    OPERATOR_B_OPTIONS = ["No Operator Column"] + list(compare_df_b.columns)
+
+                    OPERATOR_B = st.selectbox(
+                        "Operator Column B",
+                        OPERATOR_B_OPTIONS,
+                        index=(
+                            OPERATOR_B_OPTIONS.index(OPERATOR_B_DEFAULT)
+                            if OPERATOR_B_DEFAULT in OPERATOR_B_OPTIONS
+                            else 0
+                        ),
+                        key="OPERATOR_B"
+                    )
+
+                else:
+                    OPERATOR_B = "No Operator Column"
+                                    
+        # =====================================
+        # SOURCE A WIDE FORMAT
+        # =====================================
+
+        if LAYOUT_A == "Wide Format":
+
+            start_idx = compare_df_a.columns.get_loc(
+                FIRST_COMPONENT_A
+            )
+
+            component_cols = list(
+                compare_df_a.columns[start_idx:]
+            )
+
+            id_cols = list(
+                compare_df_a.columns[:start_idx]
+            )
+
+            compare_df_a = compare_df_a.melt(
+                id_vars=id_cols,
+                value_vars=component_cols,
+                var_name="Component",
+                value_name="Result"
+            )
+
+            COMPONENT_A = "Component"
+            RESULT_A = "Result"
+            UNIT_A = "No Unit Column"
+            OPERATOR_A = "No Operator Column"
+
+        # =====================================
+        # SOURCE B WIDE FORMAT
+        # =====================================
+
+        if LAYOUT_B == "Wide Format":
+
+            start_idx = compare_df_b.columns.get_loc(
+                FIRST_COMPONENT_B
+            )
+
+            component_cols = list(
+                compare_df_b.columns[start_idx:]
+            )
+
+            id_cols = list(
+                compare_df_b.columns[:start_idx]
+            )
+
+            compare_df_b = compare_df_b.melt(
+                id_vars=id_cols,
+                value_vars=component_cols,
+                var_name="Component",
+                value_name="Result"
+            )
+
+            COMPONENT_B = "Component"
+            RESULT_B = "Result"  
+            UNIT_B = "No Unit Column"
+            OPERATOR_B = "No Operator Column"
+
+        # =====================================
+        # AUTO UNIT EXTRACTION
+        # =====================================
+
+        # Source A
+        if (
+            UNIT_A == "No Unit Column"
+            or UNIT_A not in compare_df_a.columns
+        ):
+            compare_df_a = add_auto_unit_column(
+                compare_df_a,
+                COMPONENT_A
+            )
+            UNIT_A = "Auto_Unit"
+
+        # Source B
+        if (
+            UNIT_B == "No Unit Column"
+            or UNIT_B not in compare_df_b.columns
+        ):
+            compare_df_b = add_auto_unit_column(
+                compare_df_b,
+                COMPONENT_B
+            )
+            UNIT_B = "Auto_Unit"
 
         # ---------------------------------------
         # CLEAN DATA
@@ -2657,11 +3994,34 @@ if uploaded_files:
             compare_df_a[RESULT_A].astype(str)
         )
 
-        compare_df_a["Non_Detect"] = (
-            compare_df_a["Original_Result"]
-            .str.strip()
-            .str.startswith("<")
-        )
+        NON_DETECT_FLAGS = {
+            "<",
+            "<=",
+            "ND",
+            "LOD",
+            "BDL",
+            "U",
+            "UJ",
+            "LT"
+        }
+
+        if (
+            OPERATOR_A != "No Operator Column"
+            and OPERATOR_A in compare_df_a.columns
+        ):
+            compare_df_a["Non_Detect"] = (
+                compare_df_a[OPERATOR_A]
+                .astype(str)
+                .str.upper()
+                .str.strip()
+                .isin(NON_DETECT_FLAGS)
+            )
+        else:
+            compare_df_a["Non_Detect"] = (
+                compare_df_a["Original_Result"]
+                .str.strip()
+                .str.startswith("<")
+            )
 
         compare_df_a[RESULT_A] = (
             compare_df_a["Original_Result"]
@@ -2686,6 +4046,12 @@ if uploaded_files:
         compare_df_a = compare_df_a[
             compare_df_a[RESULT_A] > 0
         ]
+        
+        compare_df_a["Component_Clean"] = (
+            compare_df_a[COMPONENT_A]
+            .astype(str)
+            .apply(clean_component_name)
+        )        
 
         # =====================================
         # SOURCE B CLEANING
@@ -2695,11 +4061,23 @@ if uploaded_files:
             compare_df_b[RESULT_B].astype(str)
         )
 
-        compare_df_b["Non_Detect"] = (
-            compare_df_b["Original_Result"]
-            .str.strip()
-            .str.startswith("<")
-        )
+        if (
+            OPERATOR_B != "No Operator Column"
+            and OPERATOR_B in compare_df_b.columns
+        ):
+            compare_df_b["Non_Detect"] = (
+                compare_df_b[OPERATOR_B]
+                .astype(str)
+                .str.upper()
+                .str.strip()
+                .isin(NON_DETECT_FLAGS)
+            )
+        else:
+            compare_df_b["Non_Detect"] = (
+                compare_df_b["Original_Result"]
+                .str.strip()
+                .str.startswith("<")
+            )
 
         compare_df_b[RESULT_B] = (
             compare_df_b["Original_Result"]
@@ -2724,6 +4102,12 @@ if uploaded_files:
         compare_df_b = compare_df_b[
             compare_df_b[RESULT_B] > 0
         ]
+        
+        compare_df_b["Component_Clean"] = (
+            compare_df_b[COMPONENT_B]
+            .astype(str)
+            .apply(clean_component_name)
+        )
 
         # ---------------------------------------
         # COMPONENTS
@@ -2735,11 +4119,6 @@ if uploaded_files:
             
             compare_df_a = compare_df_a.dropna(
                 subset=[COMPONENT_A]
-            )
-
-            compare_df_a["Component_Clean"] = (
-                compare_df_a[COMPONENT_A]
-                .apply(clean_component_name)
             )
 
             component_lookup_a = (
@@ -2772,11 +4151,6 @@ if uploaded_files:
                 subset=[COMPONENT_B]
             )
 
-            compare_df_b["Component_Clean"] = (
-                compare_df_b[COMPONENT_B]
-                .apply(clean_component_name)
-            )
-
             component_lookup_b = (
                 compare_df_b.groupby("Component_Clean")[COMPONENT_B]
                 .agg(
@@ -2803,6 +4177,27 @@ if uploaded_files:
                 component_display_b
             )
 
+        unit_col_a, unit_col_b = st.columns(2)
+        with unit_col_a:
+            comparison_manual_unit_a = st.text_input(
+                "Unit for Component A",
+                value=st.session_state.manual_component_units.get(component_a, ""),
+                key=f"comparison_unit_a_{component_a}"
+            ).strip()
+        with unit_col_b:
+            comparison_manual_unit_b = st.text_input(
+                "Unit for Component B",
+                value=st.session_state.manual_component_units.get(component_b, ""),
+                key=f"comparison_unit_b_{component_b}"
+            ).strip()
+
+        if comparison_manual_unit_a:
+            comparison_manual_unit_a = clean_unit_value(comparison_manual_unit_a)
+            st.session_state.manual_component_units[component_a] = comparison_manual_unit_a
+        if comparison_manual_unit_b:
+            comparison_manual_unit_b = clean_unit_value(comparison_manual_unit_b)
+            st.session_state.manual_component_units[component_b] = comparison_manual_unit_b
+
         compare_a = compare_df_a[
             compare_df_a["Component_Clean"] == component_a
         ].copy()
@@ -2813,26 +4208,41 @@ if uploaded_files:
         ].copy()
         
         units_a = ""
-
         if (
             UNIT_A != "No Unit Column"
             and UNIT_A in compare_a.columns
         ):
-            unit_values = compare_a[UNIT_A].dropna()
+            unit_values = (
+                compare_a[UNIT_A]
+                .fillna("")
+                .astype(str)
+                .apply(clean_unit_value)
+            )
+            unit_values = unit_values[unit_values.str.strip() != ""]
 
             if not unit_values.empty:
-                units_a = str(unit_values.mode().iloc[0])
+                units_a = unit_values.mode().iloc[0]
 
         units_b = ""
-
         if (
             UNIT_B != "No Unit Column"
             and UNIT_B in compare_b.columns
         ):
-            unit_values = compare_b[UNIT_B].dropna()
+            unit_values = (
+                compare_b[UNIT_B]
+                .fillna("")
+                .astype(str)
+                .apply(clean_unit_value)
+            )
+            unit_values = unit_values[unit_values.str.strip() != ""]
 
             if not unit_values.empty:
-                units_b = str(unit_values.mode().iloc[0])
+                units_b = unit_values.mode().iloc[0]
+
+        if comparison_manual_unit_a:
+            units_a = comparison_manual_unit_a
+        if comparison_manual_unit_b:
+            units_b = comparison_manual_unit_b
 
         # ---------------------------------------
         # SITE FILTERS
@@ -2909,10 +4319,76 @@ if uploaded_files:
         else:
 
             title_b = dataset_b_name
+            
+        # ---------------------------------------
+        # APPLY SIDEBAR DATE RANGE
+        # ---------------------------------------
+
+        comparison_start = pd.to_datetime(start_date)
+
+        # Use the start of the following day so results containing a time
+        # on the selected end date are not accidentally excluded.
+        comparison_end_exclusive = (
+            pd.to_datetime(end_date)
+            + pd.Timedelta(days=1)
+        )
+
+        compare_a = compare_a[
+            (compare_a[DATE_A] >= comparison_start)
+            &
+            (compare_a[DATE_A] < comparison_end_exclusive)
+        ].copy()
+
+        compare_b = compare_b[
+            (compare_b[DATE_B] >= comparison_start)
+            &
+            (compare_b[DATE_B] < comparison_end_exclusive)
+        ].copy()
+
+        st.caption(
+            f"Comparison period: "
+            f"{comparison_start:%d %b %Y} to "
+            f"{pd.to_datetime(end_date):%d %b %Y}"
+        )
+
+        if compare_a.empty:
+            st.warning(
+                f"No Source A results are available between "
+                f"{comparison_start:%d %b %Y} and "
+                f"{pd.to_datetime(end_date):%d %b %Y}."
+            )
+
+        if compare_b.empty:
+            st.warning(
+                f"No Source B results are available between "
+                f"{comparison_start:%d %b %Y} and "
+                f"{pd.to_datetime(end_date):%d %b %Y}."
+            )
+
+        if compare_a.empty or compare_b.empty:
+            st.stop()            
 
         # ---------------------------------------
         # FIGURE
         # ---------------------------------------
+        
+        # Split detects and non-detects
+
+        compare_a_detect = compare_a[
+            ~compare_a["Non_Detect"]
+        ].copy()
+
+        compare_a_nondetect = compare_a[
+            compare_a["Non_Detect"]
+        ].copy()
+
+        compare_b_detect = compare_b[
+            ~compare_b["Non_Detect"]
+        ].copy()
+
+        compare_b_nondetect = compare_b[
+            compare_b["Non_Detect"]
+        ].copy()        
 
         mean_a = compare_a[RESULT_A].mean()
         p50_a = compare_a[RESULT_A].quantile(0.50)
@@ -2927,25 +4403,72 @@ if uploaded_files:
 
         if pcv_df is not None:
 
-            limits_a = get_component_limits(
-                pcv_df,
-                component_a
+            # Automatic matches
+            limits_a = pd.DataFrame(
+                limit_lookup.get(
+                    component_a,
+                    []
+                )
             )
 
-            limits_b = get_component_limits(
-                pcv_df,
-                component_b
+            limits_b = pd.DataFrame(
+                limit_lookup.get(
+                    component_b,
+                    []
+                )
             )
 
-            limits_a = limits_a[
-                limits_a["Regulatory Source"]
-                .isin(selected_regulations)
-            ]
+            # Manual PCV additions
+            if manual_pcvs:
 
-            limits_b = limits_b[
-                limits_b["Regulatory Source"]
-                .isin(selected_regulations)
-            ]
+                manual_limits = pcv_df[
+                    pcv_df["Parameter"].isin(manual_pcvs)
+                ]
+
+                limits_a = pd.concat(
+                    [
+                        limits_a,
+                        manual_limits
+                    ],
+                    ignore_index=True
+                ).drop_duplicates()
+
+                limits_b = pd.concat(
+                    [
+                        limits_b,
+                        manual_limits
+                    ],
+                    ignore_index=True
+                ).drop_duplicates()
+
+            # Allow both normal regulation selections
+            # and manually-added regulation groups
+            allowed_regulations = set(
+                selected_regulations
+            )
+
+            if manual_regulations:
+                allowed_regulations.update(
+                    manual_regulations
+                )
+
+            if (
+                not limits_a.empty
+                and "Regulatory Source" in limits_a.columns
+            ):
+                limits_a = limits_a[
+                    limits_a["Regulatory Source"]
+                    .isin(allowed_regulations)
+                ]
+
+            if (
+                not limits_b.empty
+                and "Regulatory Source" in limits_b.columns
+            ):
+                limits_b = limits_b[
+                    limits_b["Regulatory Source"]
+                    .isin(allowed_regulations)
+                ]
 
         fig_compare = make_subplots(
             rows=1,
@@ -2955,27 +4478,49 @@ if uploaded_files:
             horizontal_spacing=0.03
         )
 
-        # SOURCE A DATA
+        # SOURCE A DETECTS
 
         fig_compare.add_trace(
             go.Scatter(
-                x=compare_a[DATE_A],
-                y=compare_a[RESULT_A],
+                x=compare_a_detect[DATE_A],
+                y=compare_a_detect[RESULT_A],
                 mode="markers",
                 marker=dict(
                     color="#005A9C",
                     size=8
                 ),
-            name=f"{title_a} Detected"
+                name=f"{title_a} Detected"
+            ),
+            row=1,
+            col=1
+        )
+
+        # SOURCE A NON DETECTS
+
+        fig_compare.add_trace(
+            go.Scatter(
+                x=compare_a_nondetect[DATE_A],
+                y=compare_a_nondetect[RESULT_A],
+                mode="markers",
+                marker=dict(
+                    color="red",
+                    size=6,
+                    symbol="diamond",
+                    line=dict(
+                        color="darkred",
+                        width=0.5
+                    )
+                ),
+                name=f"{title_a} Below LOD"
             ),
             row=1,
             col=1
         )
 
         for value, colour, dash, label in [
-            (mean_a, "#000000", "dot", f"{title_a} Mean ({mean_a:.2f})"),
-            (p50_a, "#4B0082", "dash", f"{title_a} P50 ({p50_a:.2f})"),
-            (p95_a, "#FF00FF", "dash", f"{title_a} P95 ({p95_a:.2f})")
+            (mean_a, "#000000", "dot", f"{title_a} Mean ({mean_a:.2f} {units_a})"),
+            (p50_a, "#4B0082", "dash", f"{title_a} P50 ({p50_a:.2f} {units_a})"),
+            (p95_a, "#FF00FF", "dash", f"{title_a} P95 ({p95_a:.2f} {units_a})")
         ]:
 
             fig_compare.add_trace(
@@ -2997,11 +4542,21 @@ if uploaded_files:
                 col=1
             )
             
+        colour_palette = [
+            "#4DAF4A",
+            "#FF7F00",
+            "#E41A1C",
+            "#377EB8",
+            "#984EA3"
+        ]
+
+        regulation_colour_map = {}
+
         for _, row in limits_a.iterrows():
 
-            limit_value = pd.to_numeric(
-                row["Limit Value"],
-                errors="coerce"
+            limit_value = get_converted_limit(
+                row,
+                units_a
             )
 
             if pd.isna(limit_value):
@@ -3017,6 +4572,19 @@ if uploaded_files:
                 ""
             )
 
+            colour_key = (
+                str(regulation).strip(),
+                str(poc).strip()
+            )
+
+            if colour_key not in regulation_colour_map:
+                regulation_colour_map[colour_key] = colour_palette[
+                    len(regulation_colour_map)
+                    % len(colour_palette)
+                ]
+
+            line_colour = regulation_colour_map[colour_key]
+
             fig_compare.add_trace(
                 go.Scatter(
                     x=[
@@ -3025,8 +4593,9 @@ if uploaded_files:
                     ],
                     y=[limit_value, limit_value],
                     mode="lines",
-                    name=f"{regulation} - {poc} ({limit_value})",
+                    name=f"{regulation} - {poc} ({limit_value} {units_a})",
                     line=dict(
+                        color=line_colour,
                         width=3,
                         dash="dash"
                     )
@@ -3035,12 +4604,12 @@ if uploaded_files:
                 col=1
             )
 
-        # SOURCE B DATA
+        # SOURCE B DETECTS
 
         fig_compare.add_trace(
             go.Scatter(
-                x=compare_b[DATE_B],
-                y=compare_b[RESULT_B],
+                x=compare_b_detect[DATE_B],
+                y=compare_b_detect[RESULT_B],
                 mode="markers",
                 marker=dict(
                     color="#FF7F00",
@@ -3053,10 +4622,33 @@ if uploaded_files:
             col=2
         )
 
+        # SOURCE B NON DETECTS
+
+        fig_compare.add_trace(
+            go.Scatter(
+                x=compare_b_nondetect[DATE_B],
+                y=compare_b_nondetect[RESULT_B],
+                mode="markers",
+                marker=dict(
+                    color="red",
+                    size=6,
+                    symbol="diamond",
+                    line=dict(
+                        color="darkred",
+                        width=0.5
+                    )
+                ),
+                name=f"{title_b} Below LOD",
+                showlegend=True
+            ),
+            row=1,
+            col=2
+        )
+
         for value, colour, dash, label in [
-            (mean_b, "#000000", "dot", f"{title_b} Mean ({mean_b:.2f})"),
-            (p50_b, "#4B0082", "dash", f"{title_b} P50 ({p50_b:.2f})"),
-            (p95_b, "#FF00FF", "dash", f"{title_b} P95 ({p95_b:.2f})")
+            (mean_b, "#000000", "dot", f"{title_b} Mean ({mean_b:.2f} {units_b})"),
+            (p50_b, "#4B0082", "dash", f"{title_b} P50 ({p50_b:.2f} {units_b})"),
+            (p95_b, "#FF00FF", "dash", f"{title_b} P95 ({p95_b:.2f} {units_b})")
         ]:
 
             fig_compare.add_trace(
@@ -3081,13 +4673,36 @@ if uploaded_files:
 
         for _, row in limits_b.iterrows():
 
-            limit_value = pd.to_numeric(
-                row["Limit Value"],
-                errors="coerce"
+            limit_value = get_converted_limit(
+                row,
+                units_b
             )
 
             if pd.isna(limit_value):
                 continue
+
+            regulation = row.get(
+                "Regulatory Source",
+                ""
+            )
+
+            poc = row.get(
+                "Point of Compliance",
+                ""
+            )
+
+            colour_key = (
+                str(regulation).strip(),
+                str(poc).strip()
+            )
+
+            if colour_key not in regulation_colour_map:
+                regulation_colour_map[colour_key] = colour_palette[
+                    len(regulation_colour_map)
+                    % len(colour_palette)
+                ]
+
+            line_colour = regulation_colour_map[colour_key]
 
             fig_compare.add_trace(
                 go.Scatter(
@@ -3097,11 +4712,13 @@ if uploaded_files:
                     ],
                     y=[limit_value, limit_value],
                     mode="lines",
-                    showlegend=False,
+                    name=f"{regulation} - {poc} ({limit_value} {units_b})",
                     line=dict(
+                        color=line_colour,
                         width=3,
                         dash="dash"
-                    )
+                    ),
+                    showlegend=False
                 ),
                 row=1,
                 col=2
@@ -3130,6 +4747,10 @@ if uploaded_files:
 
         fig_compare.update_xaxes(
             title_text="Sample Date",
+            range=[
+                comparison_start,
+                pd.to_datetime(end_date)
+            ],
             showgrid=True,
             showline=True,
             linewidth=2,
@@ -3140,14 +4761,28 @@ if uploaded_files:
         fig_compare.update_yaxes(
             title_text=(
                 f"{component_display_a} ({units_a})"
-                if units_a
-                else component_display_a
+                if units_a else component_display_a
             ),
             showgrid=True,
             showline=True,
             linewidth=2,
             linecolor="black",
-            gridcolor="#D9D9D9"
+            gridcolor="#D9D9D9",
+            row=1,
+            col=1
+        )
+        fig_compare.update_yaxes(
+            title_text=(
+                f"{component_display_b} ({units_b})"
+                if units_b else component_display_b
+            ),
+            showgrid=True,
+            showline=True,
+            linewidth=2,
+            linecolor="black",
+            gridcolor="#D9D9D9",
+            row=1,
+            col=2
         )
 
         st.plotly_chart(
@@ -3196,7 +4831,37 @@ if uploaded_files:
     # EXPORT
     # =======================================
 
-        with tab7:
+    with tab7:
+
+        if st.button(
+            "Generate Export Files",
+            key="generate_exports"
+        ):
+
+            # --------------------------------------------------
+            # ALWAYS BUILD COMPLIANCE SUMMARY FOR PDF EXPORT
+            # --------------------------------------------------
+
+            summary_df = build_compliance_summary(
+                df,
+                SITE_COL,
+                DET_COL,
+                UNIT_COL,
+                RESULT_COL,
+                tuple(selected_regulations),
+                limit_lookup
+            )
+
+            if not summary_df.empty:
+                summary_df = summary_df.sort_values(
+                    by="% Exceeding",
+                    ascending=False,
+                    na_position="last"
+                ).reset_index(drop=True)
+
+            # --------------------------------------------------
+            # EXCEL EXPORT
+            # --------------------------------------------------
 
             excel_data = build_export(
                 stats_df,
@@ -3206,14 +4871,21 @@ if uploaded_files:
                 start_date,
                 end_date,
                 uploaded_file.name,
-                component_limits
+                component_limits,
+                sample_unit
             )
-            
+
+            # --------------------------------------------------
+            # FIGURE EXPORT
+            # --------------------------------------------------
+
             import tempfile
 
-            png_bytes = fig.to_image(
+            png_bytes = png_export_fig.to_image(
                 format="png",
-                scale=3
+                width=2400,
+                height=1350,
+                scale=2
             )
 
             with tempfile.NamedTemporaryFile(
@@ -3222,9 +4894,12 @@ if uploaded_files:
             ) as tmp:
 
                 tmp.write(png_bytes)
+                chart_path = tmp.name
 
-                chart_path = tmp.name          
-            
+            # --------------------------------------------------
+            # PDF EXPORT
+            # --------------------------------------------------
+
             pdf_data = build_pdf_report(
                 stats_df,
                 summary_df,
@@ -3233,14 +4908,23 @@ if uploaded_files:
                 start_date,
                 end_date,
                 uploaded_file.name,
+                sample_unit,
                 chart_path
             )
-                        
+
+            # --------------------------------------------------
+            # FILE NAMES
+            # --------------------------------------------------
+
             export_site = uploaded_file.name.rsplit(".", 1)[0]
 
-            start_txt = pd.to_datetime(start_date).strftime("%Y%m%d")
+            start_txt = pd.to_datetime(
+                start_date
+            ).strftime("%Y%m%d")
 
-            end_txt = pd.to_datetime(end_date).strftime("%Y%m%d")
+            end_txt = pd.to_datetime(
+                end_date
+            ).strftime("%Y%m%d")
 
             safe_component = (
                 selected_component
@@ -3254,17 +4938,21 @@ if uploaded_files:
                 f"{start_txt}_to_{end_txt}.xlsx"
             )
 
+            pdf_filename = (
+                f"{export_site}_"
+                f"{safe_component}_"
+                f"{start_txt}_to_{end_txt}.pdf"
+            )
+
+            # --------------------------------------------------
+            # DOWNLOAD BUTTONS
+            # --------------------------------------------------
+
             st.download_button(
                 "Download Excel Report",
                 data=excel_data,
                 file_name=excel_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
-            pdf_filename = (
-                f"{export_site}_"
-                f"{safe_component}_"
-                f"{start_txt}_to_{end_txt}.pdf"
             )
 
             st.download_button(
@@ -3273,9 +4961,8 @@ if uploaded_files:
                 file_name=pdf_filename,
                 mime="application/pdf"
             )
-
-            file_name=excel_filename
             
+        st.info("Ensure that the site compliance summary has been generated before generating any reports!")
 
     # =================================================
     # PFAS / PESTICIDE TOTALS
@@ -3284,34 +4971,81 @@ if uploaded_files:
     with tab8:
 
         st.subheader("PFAS & Pesticide Totals")
+        
+        use_company_totals = st.checkbox(
+            "Apply company-specific PFAS and pesticide total limits",
+            value=False
+        )
+
+        ACTIVE_PFAS_LIMIT = PFAS_LIMIT
+        ACTIVE_PFAS_UNIT = PFAS_LIMIT_UNIT
+
+        ACTIVE_PESTICIDE_LIMIT = PESTICIDE_LIMIT
+        ACTIVE_PESTICIDE_UNIT = PESTICIDE_LIMIT_UNIT
+
+        if use_company_totals:
+
+            available_companies = sorted(
+                set(PFAS_COMPANY_LIMITS.keys())
+                | set(PESTICIDE_COMPANY_LIMITS.keys())
+            )
+
+            selected_company = st.selectbox(
+                "Company",
+                available_companies
+            )
+
+            if selected_company in PFAS_COMPANY_LIMITS:
+
+                ACTIVE_PFAS_LIMIT = (
+                    PFAS_COMPANY_LIMITS[selected_company]["limit"]
+                )
+
+                ACTIVE_PFAS_UNIT = (
+                    PFAS_COMPANY_LIMITS[selected_company]["unit"]
+                )
+
+            if selected_company in PESTICIDE_COMPANY_LIMITS:
+
+                ACTIVE_PESTICIDE_LIMIT = (
+                    PESTICIDE_COMPANY_LIMITS[selected_company]["limit"]
+                )
+
+                ACTIVE_PESTICIDE_UNIT = (
+                    PESTICIDE_COMPANY_LIMITS[selected_company]["unit"]
+                )
+
+            st.info(
+                f"Using {selected_company} totals: "
+                f"PFAS = {ACTIVE_PFAS_LIMIT} {ACTIVE_PFAS_UNIT}, "
+                f"Pesticides = {ACTIVE_PESTICIDE_LIMIT} {ACTIVE_PESTICIDE_UNIT}"
+            )
 
         site_df = df[
             (df[SITE_COL] == selected_site)
             &
             (df[DATE_COL] >= pd.to_datetime(start_date))
             &
-            (df[DATE_COL] <= pd.to_datetime(end_date))
+            (df[DATE_COL] < filter_end_exclusive)
         ].copy()
-
-        site_df["Component_Clean"] = (
-            site_df[DET_COL]
-            .apply(clean_component_name)
-        )
 
         # -----------------------------------------
         # PFAS / PESTICIDE MATCHING
         # -----------------------------------------
 
-        pfas_results = site_df[
-            site_df["Component_Clean"]
-            .isin(PFAS_COMPONENTS)
-        ].copy()
-
-        pesticide_results = site_df[
-            site_df["Component_Clean"]
-            .isin(PESTICIDE_COMPONENTS)
-        ].copy()
-
+        (
+            pfas_results,
+            pesticide_results,
+            pfas_totals,
+            pesticide_totals
+        ) = build_pfas_pesticide_summary(
+            site_df,
+            DATE_COL,
+            RESULT_COL,
+            tuple(PFAS_COMPONENTS),
+            tuple(PESTICIDE_COMPONENTS)
+        )
+        
         matched_pfas = sorted(
             pfas_results[DET_COL]
             .dropna()
@@ -3322,66 +5056,6 @@ if uploaded_files:
             pesticide_results[DET_COL]
             .dropna()
             .unique()
-        )
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            with st.expander(
-                f"Matched PFAS Components ({len(matched_pfas)})",
-                expanded=False
-            ):
-
-                st.dataframe(
-                    pd.DataFrame({
-                        "PFAS Components": matched_pfas
-                    }),
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-        with col2:
-
-            with st.expander(
-                f"Matched Pesticides ({len(matched_pesticides)})",
-                expanded=False
-            ):
-
-                st.dataframe(
-                    pd.DataFrame({
-                        "Pesticide Components": matched_pesticides
-                    }),
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-        # -----------------------------------------
-        # TOTALS
-        # -----------------------------------------
-
-        pfas_totals = (
-            pfas_results
-            .groupby(DATE_COL)[RESULT_COL]
-            .sum()
-            .reset_index()
-            .rename(
-                columns={
-                    RESULT_COL: "PFAS Total"
-                }
-            )
-        )
-
-        pesticide_totals = (
-            pesticide_results
-            .groupby(DATE_COL)[RESULT_COL]
-            .sum()
-            .reset_index()
-            .rename(
-                columns={
-                    RESULT_COL: "Pesticides Total"
-                }
-            )
         )
 
         totals_df = pd.merge(
@@ -3497,7 +5171,13 @@ if uploaded_files:
                 )
             )
 
-        if pd.notna(PFAS_LIMIT):
+        if pd.notna(ACTIVE_PFAS_LIMIT):
+
+            limit_name = (
+                f"{selected_company} PFAS Limit"
+                if use_company_totals
+                else "PFAS Limit"
+            )
 
             fig_totals.add_trace(
                 go.Scatter(
@@ -3506,13 +5186,13 @@ if uploaded_files:
                         totals_df[DATE_COL].max()
                     ],
                     y=[
-                        PFAS_LIMIT,
-                        PFAS_LIMIT
+                        ACTIVE_PFAS_LIMIT,
+                        ACTIVE_PFAS_LIMIT
                     ],
                     mode="lines",
                     name=(
-                        f"PFAS Limit "
-                        f"({PFAS_LIMIT:.3f} {total_units})"
+                        f"{limit_name} "
+                        f"({ACTIVE_PFAS_LIMIT:.3f} {ACTIVE_PFAS_UNIT})"
                     ),
                     line=dict(
                         color="purple",
@@ -3522,7 +5202,13 @@ if uploaded_files:
                 )
             )
 
-        if pd.notna(PESTICIDE_LIMIT):
+        if pd.notna(ACTIVE_PESTICIDE_LIMIT):
+
+            limit_name = (
+                f"{selected_company} Pesticide Limit"
+                if use_company_totals
+                else "Pesticide Limit"
+            )
 
             fig_totals.add_trace(
                 go.Scatter(
@@ -3531,13 +5217,13 @@ if uploaded_files:
                         totals_df[DATE_COL].max()
                     ],
                     y=[
-                        PESTICIDE_LIMIT,
-                        PESTICIDE_LIMIT
+                        ACTIVE_PESTICIDE_LIMIT,
+                        ACTIVE_PESTICIDE_LIMIT
                     ],
                     mode="lines",
                     name=(
-                        f"Pesticide Limit "
-                        f"({PESTICIDE_LIMIT:.3f} {total_units})"
+                        f"{limit_name} "
+                        f"({ACTIVE_PESTICIDE_LIMIT:.3f} {ACTIVE_PESTICIDE_UNIT})"
                     ),
                     line=dict(
                         color="darkgreen",
@@ -3553,9 +5239,14 @@ if uploaded_files:
             title=(
                 f"{selected_site}"
                 "<br>PFAS & Pesticide Totals"
+                + (
+                    f"<br>Using {selected_company} Standards"
+                    if use_company_totals
+                    else ""
+                )
             ),
             xaxis_title="Sample Date",
-            yaxis_title=f"Total Concentration ({total_units})",
+            yaxis_title=f"Total Concentration ({ACTIVE_PFAS_UNIT})",
             legend_title="Series"
         )
 
@@ -3567,21 +5258,30 @@ if uploaded_files:
         # -----------------------------------------
         # SUMMARY TABLES
         # -----------------------------------------
+        
+        st.subheader("Sample Data")
+
+        start_date_display = totals_df[DATE_COL].min()
+        end_date_display = totals_df[DATE_COL].max()
 
         event_summary = pd.DataFrame({
             "Statistic": [
                 "Monitoring Start",
                 "Monitoring End",
-                "PFAS Components Included",
-                "Pesticide Components Included",
                 "PFAS Samples",
                 "Pesticide Samples"
             ],
             "Value": [
-                totals_df[DATE_COL].min().strftime("%d %b %Y"),
-                totals_df[DATE_COL].max().strftime("%d %b %Y"),
-                len(matched_pfas),
-                len(matched_pesticides),
+                (
+                    start_date_display.strftime("%d %b %Y")
+                    if pd.notna(start_date_display)
+                    else "N/A"
+                ),
+                (
+                    end_date_display.strftime("%d %b %Y")
+                    if pd.notna(end_date_display)
+                    else "N/A"
+                ),
                 len(pfas_totals),
                 len(pesticide_totals)
             ]
@@ -3611,6 +5311,7 @@ if uploaded_files:
                         "P50",
                         "P95",
                         "Maximum",
+                        "Limit Source",
                         "Limit",
                         "Breaches"
                     ],
@@ -3622,10 +5323,15 @@ if uploaded_files:
                         f"{pfas_totals['PFAS Total'].quantile(0.50):.3f} {total_units}",
                         f"{pfas_totals['PFAS Total'].quantile(0.95):.3f} {total_units}",
                         f"{pfas_totals['PFAS Total'].max():.3f} {total_units}",
+                        (
+                            selected_company
+                            if use_company_totals
+                            else "Default PFAS Total Limit"
+                        ),
                         f"{PFAS_LIMIT:.3f} {total_units}",
                         (
                             pfas_totals["PFAS Total"]
-                            > PFAS_LIMIT
+                            > ACTIVE_PFAS_LIMIT
                         ).sum()
                     ]
                 })
@@ -3651,6 +5357,7 @@ if uploaded_files:
                         "P50",
                         "P95",
                         "Maximum",
+                        "Limit Source",
                         "Limit",
                         "Breaches"
                     ],
@@ -3662,10 +5369,15 @@ if uploaded_files:
                         f"{pesticide_totals['Pesticides Total'].quantile(0.50):.3f} {total_units}",
                         f"{pesticide_totals['Pesticides Total'].quantile(0.95):.3f} {total_units}",
                         f"{pesticide_totals['Pesticides Total'].max():.3f} {total_units}",
-                        f"{PESTICIDE_LIMIT:.3f} {total_units}",
+                        (
+                            selected_company
+                            if use_company_totals
+                            else "Default Pesticide Total Limit"
+                        ),
+                        f"{ACTIVE_PESTICIDE_LIMIT:.3f} {total_units}",
                         (
                             pesticide_totals["Pesticides Total"]
-                            > PESTICIDE_LIMIT
+                            > ACTIVE_PESTICIDE_LIMIT
                         ).sum()
                     ]
                 })
@@ -3675,6 +5387,8 @@ if uploaded_files:
                     use_container_width=True,
                     hide_index=True
                 )
+                
+        st.subheader("All Data")        
         
         totals_display = totals_df.copy()
 
@@ -3683,7 +5397,7 @@ if uploaded_files:
                 totals_display["PFAS Total"]
                 .round(3)
                 .astype(str)
-                + f" {total_units}"
+                + f" {ACTIVE_PFAS_UNIT}"
             )
 
         if "Pesticides Total" in totals_display.columns:
