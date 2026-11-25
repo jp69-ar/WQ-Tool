@@ -34,13 +34,26 @@ st.markdown("""
     color-scheme: light;
 }
 
-/*
-Do not change the sidebar's position or height.
-Streamlit already keeps the sidebar visible and provides
-independent scrolling when the content exceeds the viewport.
-*/
+/* Main page scrolling */
+[data-testid="stAppViewContainer"] {
+    overflow-y: auto !important;
+}
+
+/* Sidebar stays in place */
+section[data-testid="stSidebar"] {
+    height: 100vh !important;
+}
+
+/* Sidebar content scrolls independently */
+section[data-testid="stSidebar"] > div:first-child {
+    height: 100vh !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
+
+/* Leave room below the final sidebar control */
 section[data-testid="stSidebar"] div[data-testid="stSidebarContent"] {
-    padding-bottom: 4rem;
+    padding-bottom: 5rem !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -2625,13 +2638,13 @@ if uploaded_files:
     
     summary_df = pd.DataFrame()
 
-    tab1, tab2, tab2a, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
         [
             "Component Data",
             "Component Statistics",
-            "Custom Statistics",
             "Component Figure",
             "Component Exceedances",
+            "Custom Statistics",
             "Site Compliance Summary",
             "Source Comparison",
             "Summary Export",
@@ -2705,382 +2718,6 @@ if uploaded_files:
                     ]
                 ],
                 use_container_width=True
-            )
-            
-    # =================================================
-    # CUSTOM SUMMARY BUILDER
-    # =================================================
-
-    with tab2a:
-
-        site_df = df[
-            (df[SITE_COL] == selected_site)
-            &
-            (df[DATE_COL] >= pd.to_datetime(start_date))
-            &
-            (df[DATE_COL] < filter_end_exclusive)
-        ].copy()
-  
-        available_components = sorted(
-            site_df["Component_Clean"]
-            .dropna()
-            .unique()
-        )
-
-        st.subheader("Preset Tables")
-
-        generate_envelope = st.button(
-            "Generate AWTM Input Table"
-        )
-
-        st.divider()
-
-        selected_components = st.multiselect(
-            "Components",
-            available_components,
-            default=[]
-        )
-
-        stat_options = [
-            "Samples",
-            "Breaches",
-            "% Exceeding",
-            "Minimum",
-            "P05",
-            "P10",
-            "Mean",
-            "P50",
-            "P90",
-            "P95",
-            "P99",
-            "Maximum",
-            "Limit"
-        ]
-
-        selected_stats = st.multiselect(
-            "Statistics",
-            stat_options,
-            default=[]
-        )
-
-        # ============================================
-        # ASTM TABLE
-        # ============================================
-
-        if (
-            generate_envelope
-            and not selected_components
-            and not selected_stats
-        ):
-
-            envelope_components = {
-                "Aluminium (total)": ["aluminium"],
-                "Colour (true)": ["colour", "color"],
-                "Iron (total) as Fe": ["iron"],
-                "Manganese (total) as Mn": ["manganese"],
-                "Turbidity": ["turbidity"],
-                "Chlorophyll": ["chlorophyll"],
-                "Total Organic Carbon": [
-                    "toc",
-                    "total organic carbon"
-                ],
-                "Total Dissolved Solids": [
-                    "tds",
-                    "total dissolved solids"
-                ],
-                "Temperature": ["temperature"],
-                "pH": ["hydrogen ion"],
-                "Alkalinity, as CaCO3": ["alkalinity"],
-                "Calcium hardness, as CaCO3": [
-                    "hardness"
-                ],
-                "Chloride": ["chloride"],
-                "Sulphate SO4": [
-                    "sulphate",
-                    "sulfate"
-                ],
-                "Calcium as Ca": ["calcium"],
-                "Conductivity": ["conductivity"],
-                "Total Pesticides": ["pesticide"],
-                "Bromide": ["bromide"]
-            }
-
-            envelope_rows = []
-
-            for display_name, aliases in envelope_components.items():
-
-                matched_component = None
-
-                for component in available_components:
-
-                    if any(
-                        alias.lower() in component.lower()
-                        for alias in aliases
-                    ):
-                        matched_component = component
-                        break
-
-                if matched_component is None:
-
-                    envelope_rows.append({
-                        "Component": display_name,
-                        "Maximum": "",
-                        "95%ile": "",
-                        "Mean": "",
-                        "5%ile": "",
-                        "Minimum": "",
-                        "Unit": ""
-                    })
-
-                    continue
-
-                component_df = site_df[
-                    site_df["Component_Clean"]
-                    == matched_component
-                ]
-
-                results = pd.to_numeric(
-                    component_df[RESULT_COL],
-                    errors="coerce"
-                ).dropna()
-
-                if len(results) == 0:
-
-                    envelope_rows.append({
-                        "Component": display_name,
-                        "Maximum": "",
-                        "95%ile": "",
-                        "Mean": "",
-                        "5%ile": "",
-                        "Minimum": "",
-                        "Unit": ""
-                    })
-
-                    continue
-
-                unit = ""
-
-                if (
-                    UNIT_COL
-                    and UNIT_COL in component_df.columns
-                ):
-
-                    unit_values = (
-                        component_df[UNIT_COL]
-                        .dropna()
-                        .astype(str)
-                    )
-
-                    if not unit_values.empty:
-                        unit = unit_values.mode().iloc[0]
-
-                envelope_rows.append({
-
-                    "Component": display_name,
-
-                    "Maximum":
-                        round(results.max(), 3),
-
-                    "95%ile":
-                        round(
-                            results.quantile(0.95),
-                            3
-                        ),
-
-                    "Mean":
-                        round(
-                            results.mean(),
-                            3
-                        ),
-
-                    "5%ile":
-                        round(
-                            results.quantile(0.05),
-                            3
-                        ),
-
-                    "Minimum":
-                        round(
-                            results.min(),
-                            3
-                        ),
-
-                    "Unit":
-                        unit
-                })
-
-            envelope_df = pd.DataFrame(
-                envelope_rows
-            )
-
-            st.dataframe(
-                envelope_df,
-                use_container_width=True,
-                hide_index=True
-            )
-
-            st.download_button(
-                "Download AWTM Input CSV",
-                envelope_df.to_csv(index=False),
-                "water_quality_envelope.csv",
-                "text/csv"
-            )
-
-        # ============================================
-        # CUSTOM TABLE
-        # ============================================
-
-        elif selected_components and selected_stats:
-
-            custom_rows = []
-
-            for component in selected_components:
-
-                component_df = site_df[
-                    site_df["Component_Clean"]
-                    == component
-                ]
-
-                results = pd.to_numeric(
-                    component_df[RESULT_COL],
-                    errors="coerce"
-                ).dropna()
-
-                if len(results) == 0:
-                    continue
-
-                if component_df[DET_COL].mode().empty:
-                    display_name = component
-                else:
-                    display_name = (
-                        component_df[DET_COL]
-                        .mode()
-                        .iloc[0]
-                    )
-
-                limit_value = None
-                breaches = 0
-
-                if pcv_df is not None:
-
-                    limits = pd.DataFrame(
-                        limit_lookup.get(
-                            component,
-                            []
-                        )
-                    )
-
-                    limits = limits[
-                        limits["Regulatory Source"]
-                        .isin(selected_regulations)
-                    ]
-
-                    if not limits.empty:
-
-                        limit_value = pd.to_numeric(
-                            limits["Limit Value"],
-                            errors="coerce"
-                        ).min()
-
-                        if pd.notna(limit_value):
-
-                            limit_value = get_converted_limit(
-                                limit_row,
-                                units
-                            )
-
-                            breaches = (
-                                results > limit_value
-                            ).sum()
-
-                calculations = {
-
-                    "Samples": len(results),
-
-                    "Breaches": breaches,
-
-                    "% Exceeding":
-                        round(
-                            100 * breaches / len(results),
-                            2
-                        ),
-
-                    "Minimum":
-                        round(results.min(), 3),
-
-                    "P05":
-                        round(
-                            results.quantile(0.05),
-                            3
-                        ),
-
-                    "P10":
-                        round(
-                            results.quantile(0.10),
-                            3
-                        ),
-
-                    "Mean":
-                        round(results.mean(), 3),
-
-                    "P50":
-                        round(
-                            results.quantile(0.50),
-                            3
-                        ),
-
-                    "P90":
-                        round(
-                            results.quantile(0.90),
-                            3
-                        ),
-
-                    "P95":
-                        round(
-                            results.quantile(0.95),
-                            3
-                        ),
-
-                    "P99":
-                        round(
-                            results.quantile(0.99),
-                            3
-                        ),
-
-                    "Maximum":
-                        round(results.max(), 3),
-
-                    "Limit":
-                        limit_value
-
-                }
-
-                row = {
-                    "Component": display_name
-                }
-
-                for stat in selected_stats:
-                    row[stat] = calculations[stat]
-
-                custom_rows.append(row)
-
-            custom_df = pd.DataFrame(custom_rows)
-
-            st.dataframe(
-                custom_df,
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            st.caption(
-                f"Using data from {start_date:%d %b %Y} to {end_date:%d %b %Y}"
-            )
-
-            st.download_button(
-                "Download CSV",
-                custom_df.to_csv(index=False),
-                "custom_summary.csv",
-                "text/csv"
             )
 
     # =================================================
@@ -3502,12 +3139,389 @@ if uploaded_files:
                     st.success(
                         "No exceedances recorded."
                     )  
+
+
+    # =================================================
+    # CUSTOM SUMMARY BUILDER
+    # =================================================
+
+    with tab5:
+
+        site_df = df[
+            (df[SITE_COL] == selected_site)
+            &
+            (df[DATE_COL] >= pd.to_datetime(start_date))
+            &
+            (df[DATE_COL] < filter_end_exclusive)
+        ].copy()
+  
+        available_components = sorted(
+            site_df["Component_Clean"]
+            .dropna()
+            .unique()
+        )
+
+        st.subheader("Preset Tables")
+
+        generate_envelope = st.button(
+            "Generate AWTM Input Table"
+        )
+
+        st.divider()
+
+        selected_components = st.multiselect(
+            "Components",
+            available_components,
+            default=[]
+        )
+
+        stat_options = [
+            "Samples",
+            "Breaches",
+            "% Exceeding",
+            "Minimum",
+            "P05",
+            "P10",
+            "Mean",
+            "P50",
+            "P90",
+            "P95",
+            "P99",
+            "Maximum",
+            "Limit"
+        ]
+
+        selected_stats = st.multiselect(
+            "Statistics",
+            stat_options,
+            default=[]
+        )
+
+        # ============================================
+        # ASTM TABLE
+        # ============================================
+
+        if (
+            generate_envelope
+            and not selected_components
+            and not selected_stats
+        ):
+
+            envelope_components = {
+                "Aluminium (total)": ["aluminium"],
+                "Colour (true)": ["colour", "color"],
+                "Iron (total) as Fe": ["iron"],
+                "Manganese (total) as Mn": ["manganese"],
+                "Turbidity": ["turbidity"],
+                "Chlorophyll": ["chlorophyll"],
+                "Total Organic Carbon": [
+                    "toc",
+                    "total organic carbon"
+                ],
+                "Total Dissolved Solids": [
+                    "tds",
+                    "total dissolved solids"
+                ],
+                "Temperature": ["temperature"],
+                "pH": ["hydrogen ion"],
+                "Alkalinity, as CaCO3": ["alkalinity"],
+                "Calcium hardness, as CaCO3": [
+                    "hardness"
+                ],
+                "Chloride": ["chloride"],
+                "Sulphate SO4": [
+                    "sulphate",
+                    "sulfate"
+                ],
+                "Calcium as Ca": ["calcium"],
+                "Conductivity": ["conductivity"],
+                "Total Pesticides": ["pesticide"],
+                "Bromide": ["bromide"]
+            }
+
+            envelope_rows = []
+
+            for display_name, aliases in envelope_components.items():
+
+                matched_component = None
+
+                for component in available_components:
+
+                    if any(
+                        alias.lower() in component.lower()
+                        for alias in aliases
+                    ):
+                        matched_component = component
+                        break
+
+                if matched_component is None:
+
+                    envelope_rows.append({
+                        "Component": display_name,
+                        "Maximum": "",
+                        "95%ile": "",
+                        "Mean": "",
+                        "5%ile": "",
+                        "Minimum": "",
+                        "Unit": ""
+                    })
+
+                    continue
+
+                component_df = site_df[
+                    site_df["Component_Clean"]
+                    == matched_component
+                ]
+
+                results = pd.to_numeric(
+                    component_df[RESULT_COL],
+                    errors="coerce"
+                ).dropna()
+
+                if len(results) == 0:
+
+                    envelope_rows.append({
+                        "Component": display_name,
+                        "Maximum": "",
+                        "95%ile": "",
+                        "Mean": "",
+                        "5%ile": "",
+                        "Minimum": "",
+                        "Unit": ""
+                    })
+
+                    continue
+
+                unit = ""
+
+                if (
+                    UNIT_COL
+                    and UNIT_COL in component_df.columns
+                ):
+
+                    unit_values = (
+                        component_df[UNIT_COL]
+                        .dropna()
+                        .astype(str)
+                    )
+
+                    if not unit_values.empty:
+                        unit = unit_values.mode().iloc[0]
+
+                envelope_rows.append({
+
+                    "Component": display_name,
+
+                    "Maximum":
+                        round(results.max(), 3),
+
+                    "95%ile":
+                        round(
+                            results.quantile(0.95),
+                            3
+                        ),
+
+                    "Mean":
+                        round(
+                            results.mean(),
+                            3
+                        ),
+
+                    "5%ile":
+                        round(
+                            results.quantile(0.05),
+                            3
+                        ),
+
+                    "Minimum":
+                        round(
+                            results.min(),
+                            3
+                        ),
+
+                    "Unit":
+                        unit
+                })
+
+            envelope_df = pd.DataFrame(
+                envelope_rows
+            )
+
+            st.dataframe(
+                envelope_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.download_button(
+                "Download AWTM Input CSV",
+                envelope_df.to_csv(index=False),
+                "water_quality_envelope.csv",
+                "text/csv"
+            )
+
+        # ============================================
+        # CUSTOM TABLE
+        # ============================================
+
+        elif selected_components and selected_stats:
+
+            custom_rows = []
+
+            for component in selected_components:
+
+                component_df = site_df[
+                    site_df["Component_Clean"]
+                    == component
+                ]
+
+                results = pd.to_numeric(
+                    component_df[RESULT_COL],
+                    errors="coerce"
+                ).dropna()
+
+                if len(results) == 0:
+                    continue
+
+                if component_df[DET_COL].mode().empty:
+                    display_name = component
+                else:
+                    display_name = (
+                        component_df[DET_COL]
+                        .mode()
+                        .iloc[0]
+                    )
+
+                limit_value = None
+                breaches = 0
+
+                if pcv_df is not None:
+
+                    limits = pd.DataFrame(
+                        limit_lookup.get(
+                            component,
+                            []
+                        )
+                    )
+
+                    limits = limits[
+                        limits["Regulatory Source"]
+                        .isin(selected_regulations)
+                    ]
+
+                    if not limits.empty:
+
+                        limit_value = pd.to_numeric(
+                            limits["Limit Value"],
+                            errors="coerce"
+                        ).min()
+
+                        if pd.notna(limit_value):
+
+                            limit_value = get_converted_limit(
+                                limit_row,
+                                units
+                            )
+
+                            breaches = (
+                                results > limit_value
+                            ).sum()
+
+                calculations = {
+
+                    "Samples": len(results),
+
+                    "Breaches": breaches,
+
+                    "% Exceeding":
+                        round(
+                            100 * breaches / len(results),
+                            2
+                        ),
+
+                    "Minimum":
+                        round(results.min(), 3),
+
+                    "P05":
+                        round(
+                            results.quantile(0.05),
+                            3
+                        ),
+
+                    "P10":
+                        round(
+                            results.quantile(0.10),
+                            3
+                        ),
+
+                    "Mean":
+                        round(results.mean(), 3),
+
+                    "P50":
+                        round(
+                            results.quantile(0.50),
+                            3
+                        ),
+
+                    "P90":
+                        round(
+                            results.quantile(0.90),
+                            3
+                        ),
+
+                    "P95":
+                        round(
+                            results.quantile(0.95),
+                            3
+                        ),
+
+                    "P99":
+                        round(
+                            results.quantile(0.99),
+                            3
+                        ),
+
+                    "Maximum":
+                        round(results.max(), 3),
+
+                    "Limit":
+                        limit_value
+
+                }
+
+                row = {
+                    "Component": display_name
+                }
+
+                for stat in selected_stats:
+                    row[stat] = calculations[stat]
+
+                custom_rows.append(row)
+
+            custom_df = pd.DataFrame(custom_rows)
+
+            st.dataframe(
+                custom_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.caption(
+                f"Using data from {start_date:%d %b %Y} to {end_date:%d %b %Y}"
+            )
+
+            st.download_button(
+                "Download CSV",
+                custom_df.to_csv(index=False),
+                "custom_summary.csv",
+                "text/csv"
+            )
                     
     ############################################################################
     # COMPLIANCE SUMMARY
     ############################################################################                   
                                                              
-    with tab5:
+    with tab6:
 
         st.subheader(
             "Compliance Summary by Water Source"
@@ -3557,7 +3571,7 @@ if uploaded_files:
     # COMPARISON TAB
     # =================================================
 
-    with tab6:
+    with tab7:
 
         st.subheader("Source Comparison")
 
@@ -4831,7 +4845,7 @@ if uploaded_files:
     # EXPORT
     # =======================================
 
-    with tab7:
+    with tab8:
 
         if st.button(
             "Generate Export Files",
@@ -4968,7 +4982,7 @@ if uploaded_files:
     # PFAS / PESTICIDE TOTALS
     # =================================================
 
-    with tab8:
+    with tab9:
 
         st.subheader("PFAS & Pesticide Totals")
         
